@@ -12,6 +12,7 @@
     "test": "node --test",
     "client:build": "node tools/package-client.mjs",
     "client:desktop": "node tools/package-desktop.mjs",
-    "client:android": "node tools/package-android.mjs"
+    "client:android": "node tools/package-android.mjs",
+    "server:status": "node tools/server-status.mjs"
   }
 }
