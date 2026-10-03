@@ -15,7 +15,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
 import { createStaticServer } from './serve.mjs';
 
@@ -23,6 +23,22 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Payload root: resources/www in a packaged app, build/client/www when running from the repo (`npm run client:desktop:dev`). */
 const WWW = app.isPackaged ? path.join(process.resourcesPath, 'www') : path.join(HERE, '..', 'build', 'client', 'www');
 const TITLE = '卫戍协议：盟约 · STRONGHOLD PROTOCOL';
+
+/**
+ * The shell has no console in front of it, so everything worth knowing goes to `<userData>/client.log` as well as to
+ * stderr (visible when launched from a terminal). A player reporting "the client vanished" can send that file, and
+ * the diagnostics above write to it synchronously so nothing is lost when the process dies abruptly.
+ */
+const LOG_FILE = path.join(app.getPath('userData'), 'client.log');
+const LOG_MAX_BYTES = 1 << 20;
+function log(...args) {
+  const line = `[${new Date().toISOString()}] ${args.map((a) => (a instanceof Error ? (a.stack || a.message) : typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`;
+  try {
+    if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > LOG_MAX_BYTES) writeFileSync(LOG_FILE, '');
+    appendFileSync(LOG_FILE, `${line}\n`);
+  } catch { /* a read-only profile must not break the game */ }
+  console.log(line);
+}
 
 /** `--server host:port` / `--server=host:port` (see the header). */
 function argValue(name) {
@@ -38,6 +54,14 @@ function argValue(name) {
 const serverOverride = argValue('--server').trim();
 const chooseServer = !serverOverride && process.argv.includes('--choose-server');
 const startFullscreen = process.argv.includes('--fullscreen');
+
+// Crash / failure diagnostics. Nothing here quits the app: a renderer that dies is reloaded by the handler below,
+// and an unhandled error must not turn into a silent exit (which is what "打开干员调配就闪退" looks like).
+process.on('uncaughtException', (e) => log('[client] uncaught exception in the main process', e));
+process.on('unhandledRejection', (e) => log('[client] unhandled rejection in the main process', e));
+app.on('child-process-gone', (_e, d) => log(`[client] child process gone: type=${d?.type} reason=${d?.reason} exitCode=${d?.exitCode}`));
+app.on('render-process-gone', (_e, _wc, d) => log(`[client] renderer gone: reason=${d?.reason} exitCode=${d?.exitCode}`));
+app.on('quit', (_e, code) => log(`[client] quitting (exit code ${code})`));
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
@@ -96,7 +120,17 @@ async function main() {
   });
   registerShortcuts(win.webContents);
   win.once('ready-to-show', () => win.show());
-  win.on('closed', () => { win = null; });
+  win.on('close', () => log('[client] window closing'));
+  win.on('closed', () => { log('[client] window closed'); win = null; });
+  win.webContents.on('render-process-gone', (_e, d) => {
+    log(`[client] the page's renderer died (reason=${d?.reason}, exitCode=${d?.exitCode}) — reloading it`);
+    // Keep the game alive: without this the window is destroyed, `window-all-closed` fires and the whole app quits,
+    // which is what a client that "闪退" (vanishes) when a heavy screen opens looks like. A reload re-runs the boot
+    // and reconnects to the same server, so the player is back in a second instead of losing the client.
+    if (win && !win.isDestroyed()) win.webContents.reload();
+  });
+  win.webContents.on('unresponsive', () => log('[client] the page stopped responding'));
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => log(`[client] load failed: ${code} ${desc} ${url}`));
   win.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (event, url) => {
     if (url.startsWith(served.url)) return;
@@ -104,10 +138,20 @@ async function main() {
     openExternal(url);
   });
 
-  await win.loadURL(`${served.url}/${query}`);
-  console.log(`[client] serving ${WWW} at ${served.url}, game server ${serverOverride || '(picker / runtime-config.js)'}`);
+  try {
+    await win.loadURL(`${served.url}/${query}`);
+  } catch (e) {
+    // A load failure is not fatal (a navigation during boot, a renderer crash we are about to recover from): log it
+    // and leave the window alone — quitting here is what turned a recoverable failure into a silent exit.
+    log(`[client] loadURL failed: ${e?.message || e}`);
+  }
+  log(`[client] serving ${WWW} at ${served.url}, game server ${serverOverride || '(picker / runtime-config.js)'}`);
 
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.on('second-instance', () => {
+    // A second launch while this one runs: bring the existing window forward (the new process quits by design).
+    log('[client] another instance was launched — focusing this window');
+    if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+  });
   app.on('window-all-closed', () => app.quit());
   app.on('quit', () => { served.close().catch(() => {}); });
 }

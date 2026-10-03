@@ -15,7 +15,7 @@
 //   rooms         rooms in the lobby; matches = rooms with a running battle
 //   humans/bots   occupied seats by kind — `humans` is the number to watch for "is anyone playing"
 //
-// A restart drops every connection and every match (all state is in memory, see docs/PACKAGING.md §9), so the
+// A restart drops every connection and every match (all state is in memory, see docs/PACKAGING.md §10), so the
 // interesting question is `humans` (and `matches`), not `sockets`.
 
 import fs from 'node:fs';
@@ -172,7 +172,7 @@ async function main() {
       const run = summarizeRun(samples);
       console.log(`\n>>> 现在可以动手了：humans ${s.status.humans} ≤ ${o.under}（matches ${s.status.matches}，uptime ${formatUptime(s.status.uptimeSec)}）`);
       if (run) console.log(`>>> 本次观察 ${run.samples} 次：humans ${run.min}–${run.max}（均值 ${run.avg}），最空出现在 ${clock(run.quietestAt)}`);
-      console.log('>>> 重启会清掉所有房间与对局（见 docs/PACKAGING.md §9），建议随后确认 uptimeSec 归零。');
+      console.log('>>> 重启会清掉所有房间与对局（见 docs/PACKAGING.md §10），建议随后确认 uptimeSec 归零。');
       process.exitCode = 0;
       break;
     }

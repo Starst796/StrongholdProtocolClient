@@ -86,6 +86,28 @@ node tools/package-desktop.mjs --skip-install   # 先生成 build/client/www
 cd desktop && npm start
 ```
 
+### 4.3 崩溃与日志
+
+壳没有控制台在前台，所以一切异常都写进日志文件：
+
+```
+%APPDATA%\StrongholdProtocol\client.log        （1 MB 自动清空；启动时也会打印到 stderr）
+C:\Users\<你>\AppData\Roaming\StrongholdProtocol\client.log
+```
+
+玩家反馈"客户端突然消失"时，让他把这个文件发过来。
+
+壳对下面这些情况**不再退出**（以前任何一条都会让整个应用消失，看起来就是"闪退"）：
+
+| 情况 | 现在的行为 |
+|---|---|
+| 渲染进程崩溃（GPU/内存，`render-process-gone`） | 记录原因（`reason=crashed/oom`）并**自动重载页面**；会话由服务器记住，玩家回到原来的界面 |
+| 主进程未捕获异常 / 未处理的 Promise 拒绝 | 记录日志并继续运行（不再静默退出） |
+| 首屏 `loadURL` 失败 | 记录日志，保留窗口 |
+| 页面无响应（`unresponsive`） | 记录日志 |
+
+> 排查 "打开某个界面就闪退"：先看 `client.log` 里有没有 `renderer gone: reason=…`。有 → 是渲染进程崩了（现在会自动恢复，原因也记下来了）；没有 → 是整个进程被别的东西结束了（例如**已有实例在跑**：单实例锁会让新启动的进程直接退出，`client.log` 里会有 `another instance was launched`）。
+
 ## 5. Android 版（apk）
 
 | 文件 | 说明 |
@@ -154,7 +176,6 @@ $env:JAVA_HOME = "C:\Program Files\Java\jdk-21"
 macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` / `commandlinetools-linux`，SDK 默认在 `~/Library/Android/sdk` / `~/Android/Sdk`。`tools/package-android.mjs` 会自己找 `ANDROID_HOME` / `ANDROID_SDK_ROOT` / 默认目录，并写 `mobile/android/local.properties`。
 
 ## 6. 选择服务器（进游戏前）
-
 打包客户端里多了一个**选择服务器页**（`shell/picker.js` + `shell/picker-core.js`，被复制成 payload 里的 `/js/shell/*`），它在 `/js/main.js` 之前执行、盖住启动画面，把选择写进 `localStorage`（`sp.shell.*`）后重载页面。`js/net.js` 只认 `globalThis.__SP_SERVER__`，选择页只是给它赋值，所以不需要再改游戏源码。
 
 | 行为 | 说明 |
@@ -167,7 +188,27 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 
 改动选择页后跑一遍 `test/picker.test.js`（规则单测）。DOM 那半边没有自动化测试，改动后请手动确认：桌面 `cd desktop && npm start`，Android 装 APK 后首启。
 
-## 7. 与游戏仓库的关系（契约）与打包内容
+## 7. 服务器公告（`app.notice`）
+
+服务端可以把一条公告推给所有在线玩家（"服务器 23:30 维护重启"），客户端在**任何界面**顶部显示一条胶囊，**标题页也显示**——玩家还没进大厅就能看到。
+
+**发公告的地方在游戏仓库**（打包仓库不参与）：`server/notice.js` 轮询一个文件，`scripts/notice.mjs` 是操作命令，完整用法见游戏仓库的 [docs/DEPLOY.md §6](https://github.com/sganggs/Stronghold-Protocol/blob/master/docs/DEPLOY.md)。发公告**不需要重启服务器**。
+
+```bash
+# 在游戏仓库的服务器上
+node scripts/notice.mjs --kind maintenance --for 30m "30 分钟后维护重启，预计 5 分钟"
+node scripts/notice.mjs --clear        # 撤回
+```
+
+打包客户端要**重新打包**才能显示公告：
+
+- 客户端代码（`public/js/ui/noticeBanner.js`、`main.js`、`css/components.css`）跟着 `public/**` 打进 payload，所以旧的 exe/apk 里没有这个横幅；
+- 旧客户端收到未知的 S2C 类型只是没有监听器（`net.js` 按 `t` 分发，不会报错），会**安静地忽略**它——不会崩，但也看不到；
+- 网页端由服务器直接提供文件，服务器一升级就生效，不需要重新打包。
+
+验证（本仓库的流程）：`node tools/package-client.mjs` 后启动本地服务器并 `node scripts/notice.mjs "测试"`，用 `--server 127.0.0.1:3000` 启动 exe/apk 应当看到横幅出现/消失。实测：打包好的 exe 在公告发布后立刻显示「维护」胶囊，`--clear` 后消失。
+
+## 8. 与游戏仓库的关系（契约）与打包内容
 
 游戏仓库（`Stronghold-Protocol`）**只读**：本仓库从它读源码，从不修改它（`git status` 永远是干净的，`git pull` 不会冲突）。
 
@@ -185,7 +226,7 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 
 `tools/package-client.mjs` 是**增量**的：文件大小与修改时间没变就跳过，源文件删掉后产物里的对应文件也会被删——重建很快（第二次通常 0 个文件被写入）。
 
-## 8. 排错
+## 9. 排错
 
 | 现象 | 处理 |
 |---|---|
@@ -208,7 +249,7 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | 手机横屏时准备阶段场景偏小 | 旧 APK：`shell/display.css` 去掉根字号 40 px 下限后，准备阶段和战斗、和桌面同一个比例（见 §5 的实测表） |
 | 用 puppeteer 量桌面壳时窗口总是 800×600 | puppeteer 的默认视口覆盖了真实窗口尺寸：`puppeteer.connect({ browserURL, defaultViewport: null })` |
 
-## 9. 部署与重启（服务器侧）
+## 10. 部署与重启（服务器侧）
 
 线上跑的是 systemd 单元 `stronghold.service`（starst.site）：
 
@@ -233,7 +274,7 @@ Restart=always / RestartSec=3 / KillSignal=SIGINT / TimeoutStopSec=20
 所以"推上去就有"并不成立：提交要么先合进上游（PR 被合并），要么在服务器上直接从 fork 拉一次（fork 的提交是上游的直系子提交，可以 `--ff-only`）：
 
 ```bash
-# 服务器（挑个空窗，见 §10 的查忙工具）
+# 服务器（挑个空窗，见 §11 的查忙工具）
 cd ~/webUI/Stronghold-Protocol
 git pull https://gh-proxy.com/https://github.com/Starst796/Stronghold-Protocol.git master --ff-only
 sudo systemctl restart stronghold
@@ -246,7 +287,7 @@ curl -s localhost:3000/healthz          # uptimeSec 应归零，version/app 是�
 
 **一个坑**：`data/assets.json` 是被跟踪的文件，而服务器上的进程会改写它（`git status` 里常驻 ` M data/assets.json`）。将来上游也改这个文件时 `git pull` 会因为本地改动被拒，先 `git checkout -- data/assets.json` 再拉。
 
-## 10. 查服务器忙不忙（挑空窗）
+## 11. 查服务器忙不忙（挑空窗）
 
 `/healthz` 是公开的，`tools/server-status.mjs` 把它变成能"蹲空窗"的工具：
 
@@ -260,5 +301,5 @@ npm run server:status -- --json                        # 原始 JSON，喂给别
 
 字段：`humans` = 真人占座（最该看的）、`matches` = 进行中的对局、`rooms`、`sockets` = 打开的连接、`sessions` = 注册表里的会话（含 10 分钟重连窗口内已断开的，所以通常 ≥ sockets）、`uptimeSec` = 进程运行时长（重启后应归零，用来确认部署生效）。
 
-## 11. 素材与许可
+## 12. 素材与许可
 打包产物里包含《明日方舟》的美术 / 音频素材，版权归鹰角网络 / Yostar，**不适用**本仓库的 GPL-3.0，仅限个人非商业自用；请勿再分发这些素材或包含它们的整合包（见游戏仓库的 [声明](https://github.com/sganggs/Stronghold-Protocol#声明) 与 [NOTICE.md](https://github.com/sganggs/Stronghold-Protocol/blob/master/NOTICE.md)）。

@@ -12,7 +12,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 npm test                    # 打包流程的单元/契约测试（无游戏 checkout 时相关用例自动跳过）
 ```
 
-详细说明（Android SDK 准备、签名、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**。
+详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**。
 
 ```
 npm run server:status                                  # 现在多少人在线 / 多少对局在跑
@@ -36,10 +36,10 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
 | `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk，见下），`git diff` 生成 || `shell/picker.js`、`shell/picker-core.js` | 端侧"选择服务器"页（进游戏前覆盖启动画面）：探测服务器、记住上次选择、自定义地址；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
-| `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务 + 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe |
+| `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务 + 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
 | `client.config.json` | `gameRoot`、`defaultServer` |
-| `tools/server-status.mjs` | 查服务器忙不忙（`/healthz`）：单次采样、滚动观察、`--under N` 等空窗（见 §10） |
+| `tools/server-status.mjs` | 查服务器忙不忙（`/healthz`）：单次采样、滚动观察、`--under N` 等空窗（见 §11） |
 | `test/packaging.test.js`、`test/picker.test.js` | 补丁/契约/摊平/增量的测试；选择页规则的测试 |
 
 ## 与游戏仓库的契约（重要）
