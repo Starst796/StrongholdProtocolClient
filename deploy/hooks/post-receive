@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# post-receive: deploy this push, right now, instead of waiting for a polling timer.
+#
+# Installed into <repo>/.git/hooks/post-receive by `scripts/deploy/install.sh --mode hook`.
+# The hook updates the working tree to the pushed commit, then runs scripts/deploy/deploy.sh --pushed, which
+# announces the restart in game, restarts the systemd service and verifies /healthz.
+#
+# Git feeds "<oldrev> <newrev> <refname>" per changed ref on stdin and shows our stdout/stderr to the pusher,
+# so `git push workplace master` ends with the deploy log. A failed health check rolls the tree back.
+#
+# Config: /etc/default/stronghold-deploy (SP_DEPLOY_*) when present — the same file the timer mode uses.
+#         SP_DEPLOY_ROLLBACK=0 disables the automatic rollback (default: enabled).
+#         SP_DEPLOY_SCRIPT=<path> runs a different deploy script (escape hatch if a pushed one is broken).
+
+set -uo pipefail
+
+# receive-pack runs hooks with GIT_DIR=. (and a quarantine dir) pointing at this repository, which makes every
+# `git` call below resolve against $WORK/.git instead of $WORK. Clear them before touching the working tree.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
+WORK="${SP_DEPLOY_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+BRANCH="${SP_DEPLOY_BRANCH:-master}"
+# shellcheck disable=SC1091
+[ -f /etc/default/stronghold-deploy ] && . /etc/default/stronghold-deploy
+
+LOG="$WORK/.git/stronghold-deploy.log"
+touch "$LOG" 2>/dev/null || LOG=/dev/null
+{
+  printf '\n===== %s push to %s\n' "$(date '+%F %T')" "$BRANCH"
+} >> "$LOG" 2>/dev/null || true
+say() { printf 'deploy: %s\n' "$*" | tee -a "$LOG"; }
+
+[ -d "$WORK/.git" ] || { say "not a git checkout: $WORK"; exit 1; }
+
+# Which deploy script to run: an explicit override, the pushed one (so deploy fixes flow through a push), or the
+# installed copy (so a push that removes/breaks scripts/deploy still deploys with something that works).
+deploy_script() {
+  if [ -n "${SP_DEPLOY_SCRIPT:-}" ]; then printf '%s' "$SP_DEPLOY_SCRIPT"; return; fi
+  if [ -x "$WORK/scripts/deploy/deploy.sh" ]; then printf '%s' "$WORK/scripts/deploy/deploy.sh"; return; fi
+  if [ -x /usr/local/bin/stronghold-deploy.sh ]; then printf '%s' /usr/local/bin/stronghold-deploy.sh; return; fi
+  printf ''
+}
+
+# Serialise concurrent pushes: two at once would interleave resets and restarts.
+if command -v flock >/dev/null; then
+  exec 9>"$WORK/.git/stronghold-deploy.lock"
+  flock 9 || { say "could not take the deploy lock"; exit 1; }
+fi
+
+status=0
+while read -r oldrev newrev refname; do
+  case "$refname" in
+    "refs/heads/$BRANCH") ;;
+    *) say "ignoring $refname (only refs/heads/$BRANCH triggers a deploy)"; continue;;
+  esac
+  if [ "$newrev" = "0000000000000000000000000000000000000000" ]; then
+    say "ignoring the deletion of $BRANCH"
+    continue
+  fi
+
+  # A first-ever push (or one whose parent revision this checkout does not have) leaves no range to compare.
+  FROM="$oldrev"
+  if [ "$oldrev" = "0000000000000000000000000000000000000000" ] || ! git -C "$WORK" cat-file -e "$oldrev^{commit}" 2>/dev/null; then
+    FROM=""
+    say "no usable previous revision — deploying $newrev as a whole"
+  fi
+
+  dirty="$(git -C "$WORK" status --porcelain --untracked-files=no | head -n 20)"
+  if [ -n "$dirty" ]; then
+    say "discarding local changes in the working tree:"
+    printf '%s\n' "$dirty" | sed 's/^/deploy:   /'
+  fi
+
+  short="$(git -C "$WORK" rev-parse --short "$newrev")"
+  say "updating the working tree to $short"
+  if ! git -C "$WORK" reset --hard --quiet "$newrev"; then
+    say "FAILED: could not update the working tree"
+    status=1
+    continue
+  fi
+
+  SCRIPT="$(deploy_script)"
+  if [ -z "$SCRIPT" ]; then
+    say "WARNING: $short has no scripts/deploy/deploy.sh and /usr/local/bin/stronghold-deploy.sh is missing —"
+    say "         the working tree is updated, but nothing was announced or restarted: restart $BRANCH by hand."
+    status=1
+    continue
+  fi
+
+  if [ -n "$FROM" ]; then
+    "$SCRIPT" --pushed --from "$FROM" --to "$newrev" 2>&1 | tee -a "$LOG"
+  else
+    "$SCRIPT" --pushed --to "$newrev" 2>&1 | tee -a "$LOG"
+  fi
+  rc="${PIPESTATUS[0]}"
+
+  if [ "$rc" -eq 0 ]; then
+    say "deployed $short"
+    continue
+  fi
+  if [ "$rc" -eq 2 ]; then
+    say "nothing was restarted (busy or dry run) — the tree is updated, restart by hand when ready"
+    continue
+  fi
+
+  status=1
+  if [ "${SP_DEPLOY_ROLLBACK:-1}" = "1" ] && [ -n "$FROM" ]; then
+    say "deploy failed — rolling back to $(git -C "$WORK" rev-parse --short "$FROM")"
+    git -C "$WORK" reset --hard --quiet "$FROM" || say "rollback reset failed"
+    sudo systemctl restart "${SP_DEPLOY_SERVICE:-stronghold}" || say "rollback restart failed"
+  else
+    say "deploy failed; the tree stays on the new commit"
+  fi
+done
+
+exit "$status"

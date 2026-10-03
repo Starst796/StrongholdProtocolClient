@@ -1,0 +1,15 @@
+[Unit]
+Description=Stronghold Protocol: deploy + restart the game server from git
+Documentation=https://github.com/sganggs/Stronghold-Protocol
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+# The unit a push lands in. Reads /etc/default/stronghold-deploy (written by install.sh) for the remote + options.
+EnvironmentFile=-/etc/default/stronghold-deploy
+ExecStart=/usr/local/bin/stronghold-deploy.sh
+# No overlap with itself; a failed deploy must not leave a restart loop behind.
+TimeoutStartSec=10min

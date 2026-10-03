@@ -262,30 +262,25 @@ Restart=always / RestartSec=3 / KillSignal=SIGINT / TimeoutStopSec=20
 
 **什么要重启**：`server/**`、`shared/**`、`server/sim/**`（启动时 `import` 进内存）和 `data/*.json`（`server/data.js` 的 `getData()` 是单例）**都要重启**；`public/**` 不用——每次请求都 `fs.stat` + 读盘。仓库里没有任何 `fs.watch` / nodemon，`Restart=always` 只在进程崩了时拉起它。
 
-**push 不会自动生效**：那台机器上没有 hook（`.git/hooks` 只有 sample）、没有 cron、没有 CI；它只跟一个远程同步。仓库与远程的现状：
+**push 会不会自动生效**：starst.site 上已经装好 `post-receive` 钩子（`receive.denyCurrentBranch=ignore`）——**`git push workplace master` 就是部署**：公告 → 重启 → 校验 `/healthz` → 撤公告，日志直接打在你这次 push 的输出里，失败会自动回滚。脚本、安装方式、配置项和排错见 **[DEPLOY-SERVER.md](./DEPLOY-SERVER.md)**。**不要**再同时装 systemd 定时器（会重启两次）。仓库与远程的现状：
 
 | 位置 | 指向 | 说明 |
 |---|---|---|
 | 本地 `origin` | `git@github.com:Starst796/Stronghold-Protocol` | 你的 fork，SSH 推送正常 |
 | 本地 `upstream` | `https://github.com/sganggs/Stronghold-Protocol.git` | 上游项目（开发机直连 github.com:443 会超时） |
-| 本地 `workplace` | `ubuntu@starst.site:/home/ubuntu/webUI/Stronghold-Protocol` | 服务器工作目录。它是**非裸仓库**、`master` 正被检出、`receive.denyCurrentBranch` 未设置 → **直接 push 会被 git 拒绝** |
-| 服务器 `origin` | `https://gh-proxy.com/https://github.com/sganggs/Stronghold-Protocol.git` | 服务器只跟**上游**同步 |
+| 本地 `workplace` | `ubuntu@starst.site:/home/ubuntu/webUI/Stronghold-Protocol` | 服务器工作目录。**非裸仓库**、`master` 正被检出；已设 `receive.denyCurrentBranch=ignore` + 装了 post-receive 钩子 → **push = 部署** |
+| 服务器 `origin` | `https://gh-proxy.com/https://github.com/sganggs/Stronghold-Protocol.git` | 服务器只跟**上游**同步（钩子模式下会显得"落后"，正常） |
 
-所以"推上去就有"并不成立：提交要么先合进上游（PR 被合并），要么在服务器上直接从 fork 拉一次（fork 的提交是上游的直系子提交，可以 `--ff-only`）：
+一次发版 = 两次 push（`origin` 留档、`workplace` 部署）：
 
 ```bash
-# 服务器（挑个空窗，见 §11 的查忙工具）
-cd ~/webUI/Stronghold-Protocol
-git pull https://gh-proxy.com/https://github.com/Starst796/Stronghold-Protocol.git master --ff-only
-sudo systemctl restart stronghold
-curl -s localhost:3000/healthz          # uptimeSec 应归零，version/app 是新的
+git push origin master        # 给别人看 / 开 PR
+git push workplace master     # 部署（公告会等 --lead 秒，默认 60）
 ```
-
-（服务器网络实测：github.com 与 gh-proxy.com 都通，所以上面这条在服务器上可用。想长期省事，就在服务器上 `git remote add fork <fork 地址>`，之后 `git pull fork master`。）
 
 **重启会掉什么**：全部。会话 / 房间 / 对局都在内存里（`SessionRegistry` + `Lobby`），没有任何持久化。优雅停机会给每个房间发 `room.closed{reason:'shutdown'}`、socket 以 **1001** 关闭；客户端会自动重连（只有 4001「被顶替」不重连），但重启后注册表是空的 → `byToken()` 查不到 → **新建会话**（`resumed:false`，新 `playerId`）。昵称在客户端 `localStorage` 里所以还在，**房间与进行中的对局不恢复**（`reconnectWindowMs: 10 分钟` 只对"服务器活着、只是网络抖一下"有效）。停机时长 ≈ **5 秒**（优雅收尾 <1 s + `RestartSec=3` + 启动约 0.6 s，本机实测 `start → /healthz` 200 = 626 ms）。
 
-**一个坑**：`data/assets.json` 是被跟踪的文件，而服务器上的进程会改写它（`git status` 里常驻 ` M data/assets.json`）。将来上游也改这个文件时 `git pull` 会因为本地改动被拒，先 `git checkout -- data/assets.json` 再拉。
+**一个坑**：`data/assets.json` 是被跟踪的文件，而服务器上的进程会改写它（`git status` 里常驻 ` M data/assets.json`）。钩子的 `git reset --hard` 会把它一起清掉，所以自动发版不受影响；但如果你在服务器上手动 `git pull`，先 `git checkout -- data/assets.json` 再拉。
 
 ## 11. 查服务器忙不忙（挑空窗）
 

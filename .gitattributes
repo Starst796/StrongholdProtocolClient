@@ -13,6 +13,8 @@
 *.css text eol=lf
 *.gradle text eol=lf
 *.patch text eol=lf
+# the server deploy scripts (deploy/): shell + systemd units, LF wherever they run
+deploy/** text eol=lf
 # binary
 *.png binary
 *.ico binary

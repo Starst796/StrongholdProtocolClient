@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll the Stronghold Protocol remote every 2 minutes and deploy new commits
+
+[Timer]
+# First run 2 minutes after boot, then every 2 minutes; Persistent catches up after a reboot.
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+# A deploy that is already running must not be started again (systemd skips the tick).
+Unit=stronghold-deploy.service
+
+[Install]
+WantedBy=timers.target
