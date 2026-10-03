@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
-import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT } from '../tools/package-client.mjs';
+import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, PICKER_FILES } from '../tools/package-client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -63,9 +63,10 @@ function makeGameFixture() {
     'diff --git a/public/index.html b/public/index.html',
     '--- a/public/index.html',
     '+++ b/public/index.html',
-    '@@ -1,3 +1,4 @@',
+    '@@ -1,3 +1,5 @@',
     ' <html>',
     '+<script src="/js/runtime-config.js"></script>',
+    '+<script type="module" src="/js/shell/picker.js"></script>',
     ' <script type="module" src="/js/main.js"></script>',
     ' </html>',
     'diff --git a/public/js/net.js b/public/js/net.js',
@@ -178,6 +179,11 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
       assert.match(net, /const target = resolveServerTarget\(loc\);/);
       assert.match(readFileSync(path.join(out, 'js', 'screens', 'room.js'), 'utf8'), /toHttpUrl\(target\)/);
       assert.match(readFileSync(path.join(out, 'index.html'), 'utf8'), /<script src="\/js\/runtime-config\.js"><\/script>/);
+      // the picker must be an ES module and come *before* main.js: module scripts run in document order
+      const html = readFileSync(path.join(out, 'index.html'), 'utf8');
+      const pickerAt = html.indexOf('<script type="module" src="/js/shell/picker.js">');
+      assert.ok(pickerAt !== -1, 'index.html must load /js/shell/picker.js');
+      assert.ok(pickerAt < html.indexOf('<script type="module" src="/js/main.js"'), 'the picker runs before the game boots');
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
@@ -198,8 +204,12 @@ describe('client payload assembly', () => {
     assert.equal(r.server, DEFAULT_SERVER);
     assert.equal(r.missingAssets, false);
     assert.equal(r.patched.length, PATCHED_FILES.length);
-    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'data/local-assets.json']) {
+    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json']) {
       assert.ok(existsSync(path.join(out, rel)), `${rel} must be in the payload`);
+    }
+    // the picker is copied verbatim, so /js/shell/picker.js can import ../net.js and ./picker-core.js
+    for (const [name, rel] of PICKER_FILES) {
+      assert.equal(readFileSync(path.join(out, rel), 'utf8'), readFileSync(path.join(ROOT, 'shell', name), 'utf8'));
     }
     // Node-only sim loader is never shipped
     assert.ok(!existsSync(path.join(out, 'sim', 'nodeData.js')));

@@ -6,10 +6,12 @@
 // default) — game traffic goes straight to that server, this process only serves the 260 MB of local art/music
 // so entering a match doesn't re-download it.
 //
-//   StrongholdProtocol.exe [--server <address>] [--fullscreen]
+//   StrongholdProtocol.exe [--server <address>] [--fullscreen] [--choose-server]
 //
 // `--server` overrides the built-in address for this run (LAN play without a rebuild) by appending ?server=…
-// which public/js/net.js understands.
+// which public/js/net.js understands. Otherwise the client uses the server remembered by the in-page picker
+// (shell/picker.js): on a first run — or whenever it has nothing remembered — that picker covers the boot screen
+// and the player picks a server; `--choose-server` and F2 force it back up later.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +36,7 @@ function argValue(name) {
 }
 
 const serverOverride = argValue('--server').trim();
+const chooseServer = !serverOverride && process.argv.includes('--choose-server');
 const startFullscreen = process.argv.includes('--fullscreen');
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -49,11 +52,17 @@ function buildMenu() {
   Menu.setApplicationMenu(null); // a game window, no Electron menu bar
 }
 
+/** Bring the in-page server picker up again (shell/picker.js exposes window.__SP_SHELL_PICKER__). */
+function showServerPicker(wc) {
+  wc.executeJavaScript('globalThis.__SP_SHELL_PICKER__ && globalThis.__SP_SHELL_PICKER__.show()', true).catch(() => {});
+}
+
 function registerShortcuts(wc) {
   wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
     const key = input.key.toLowerCase();
     if (key === 'f11') { win?.setFullScreen(!win.isFullScreen()); event.preventDefault(); }
+    else if (key === 'f2') { showServerPicker(wc); event.preventDefault(); }
     else if (key === 'f5' || (input.control && key === 'r')) { wc.reload(); event.preventDefault(); }
     else if (key === 'f12' || (input.control && input.shift && key === 'i')) { wc.toggleDevTools(); event.preventDefault(); }
   });
@@ -69,7 +78,9 @@ async function main() {
   }
 
   const served = await createStaticServer({ root: WWW, log: console });
-  const query = serverOverride ? `?server=${encodeURIComponent(serverOverride)}` : '';
+  const query = serverOverride
+    ? `?server=${encodeURIComponent(serverOverride)}`
+    : (chooseServer ? '?pick=1' : '');
 
   win = new BrowserWindow({
     width: 1440,
@@ -94,7 +105,7 @@ async function main() {
   });
 
   await win.loadURL(`${served.url}/${query}`);
-  console.log(`[client] serving ${WWW} at ${served.url}, game server ${serverOverride || '(from runtime-config.js)'}`);
+  console.log(`[client] serving ${WWW} at ${served.url}, game server ${serverOverride || '(picker / runtime-config.js)'}`);
 
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   app.on('window-all-closed', () => app.quit());

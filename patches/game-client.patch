@@ -1,13 +1,14 @@
 diff --git a/public/index.html b/public/index.html
-index 82a085e..7b2d1db 100644
+index 82a085e..80047ef 100644
 --- a/public/index.html
 +++ b/public/index.html
-@@ -93,6 +93,8 @@
+@@ -93,6 +93,9 @@
        if (/specifier|resolve|import|module/i.test(String(ev && ev.message))) window.__spBootFail('load');
      });
    </script>
 +  <!-- Packaged-client server address (empty in the web build → the page's own origin). Must run before /js/main.js. -->
 +  <script src="/js/runtime-config.js"></script>
++  <script type="module" src="/js/shell/picker.js"></script>
    <script type="module" src="/js/main.js" onerror="window.__spBootFail && window.__spBootFail('load')"></script>
    <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
    <script>
