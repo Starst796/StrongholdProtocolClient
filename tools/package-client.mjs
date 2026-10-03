@@ -11,8 +11,8 @@
 //                      shared/  ← shared/
 //                      sim/     ← server/sim/**/*.js minus the Node-only loader
 //                      data.js  ← DATA_SHIM_JS (browser stand-in for server/data.js)
-//                      build.json, js/runtime-config.js, js/shell/*.js  ← generated (which server / which game
-//                                                                        commit / the shell's server picker)
+//                      build.json, js/runtime-config.js, js/shell/*, css/shell-display.css  ← generated (which server
+//                                                                             / which game commit / shell hooks)
 //
 // The game checkout is never modified: the source-level hooks a packaged client needs live in
 // patches/game-client.patch and are applied to the payload copy (tools/payload-patches.mjs).
@@ -154,9 +154,10 @@ export function assembleClient(opts = {}) {
   else writeGenerated(path.join('data', 'local-assets.json'), EMPTY_LOCAL_ART + '\n');
   // The packaged client's server address (read by public/js/net.js through globalThis.__SP_SERVER__).
   writeGenerated('js/runtime-config.js', runtimeConfigSource(server));
-  // The shell's pre-game server picker and its pure rules (loaded by the patched index.html before /js/main.js).
-  // Client-repo only: the browser build has no picker, its server is always its own origin.
-  for (const [name, rel] of PICKER_FILES) writeGenerated(rel, pickerSource(name));
+  // The shell's pre-game server picker, its pure rules, and the display tweaks for short screens (see shell/).
+  // Client-repo only: the browser build has neither file, its server is always its own origin and its HUD is the
+  // one the game repo ships.
+  for (const [name, rel] of SHELL_FILES) writeGenerated(rel, shellSource(name));
   // What this payload was built from — the packaged clients report it (update checks, bug reports). Deliberately
   // free of timestamps so an unchanged payload stays byte-identical (and therefore incremental).
   const game = gameInfo(gameRoot);
@@ -212,11 +213,16 @@ globalThis.__SP_SERVER__ = ${JSON.stringify(server)};
 `;
 }
 
-/** Payload paths of the shell picker sources: the patched index.html loads /js/shell/picker.js before main.js. */
-export const PICKER_FILES = [['picker.js', 'js/shell/picker.js'], ['picker-core.js', 'js/shell/picker-core.js']];
+/** Payload paths of the shell sources: the picker (loaded by the patched index.html before main.js) and the
+ * display tweaks (linked as a stylesheet after the game's own CSS). */
+export const SHELL_FILES = [
+  ['picker.js', 'js/shell/picker.js'],
+  ['picker-core.js', 'js/shell/picker-core.js'],
+  ['display.css', 'css/shell-display.css'],
+];
 
-/** Body of a /js/shell/*.js payload file — shell/<name>, copied verbatim. */
-export function pickerSource(name) {
+/** Body of a payload shell file — shell/<name>, copied verbatim. */
+export function shellSource(name) {
   return fs.readFileSync(path.join(CLIENT_ROOT, 'shell', name), 'utf8');
 }
 

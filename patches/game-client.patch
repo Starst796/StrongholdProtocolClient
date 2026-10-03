@@ -1,8 +1,17 @@
 diff --git a/public/index.html b/public/index.html
-index 82a085e..80047ef 100644
+index 82a085e..360d735 100644
 --- a/public/index.html
 +++ b/public/index.html
-@@ -93,6 +93,9 @@
+@@ -40,6 +40,8 @@
+   <link rel="stylesheet" href="/css/screens/loadout.css" />
+   <link rel="stylesheet" href="/css/emotes.css" />
+   <link rel="stylesheet" href="/css/devices.css" />
++  <!-- Packaged clients: HUD scale on short landscape screens (see shell/display.css). -->
++  <link rel="stylesheet" href="/css/shell-display.css" />
+ 
+   <script type="importmap">
+     { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js" } }
+@@ -93,6 +95,9 @@
        if (/specifier|resolve|import|module/i.test(String(ev && ev.message))) window.__spBootFail('load');
      });
    </script>

@@ -1,0 +1,31 @@
+/* ==========================================================================================
+   shell-display.css — packaged clients only (never part of the game repo): tools/package-client.mjs copies this to
+   /css/shell-display.css and patches/game-client.patch links it right after css/devices.css (so it overrides).
+
+   Why: landscape phones are much shorter than the 16:9 the HUD is designed for, and css/theme.css scales the whole
+   HUD from one root font size —
+
+     html { font-size: clamp(40px, min(100vw / 19.2, 100vh / 10.8), 240px) }
+
+   — whose 40 px floor wins as soon as the screen is short: min(756/19.2, 366/10.8) = 33.9 px on the phone this was
+   measured on, clamped up to 40. The HUD is then ~15 % taller relative to the screen than on a desktop, and the prep
+   camera keeps the bench and the field clear of it (js/ui/fieldHost.js hudBands → js/render/projection.js clearHud),
+   so it zooms the preparation scene out: the board's bench→field band lands at 46 % of the screen height instead of
+   the 55 % every desktop viewport gets (measured 756×366 = ×0.80, 800×360 = ×0.82). The auto-battle cameras carry no
+   HUD band, which is why a running fight looked normal while the prep scene looked small.
+
+   The fix is the same formula without the floor. On any viewport where min(w/19.2, h/10.8) ≥ 40 the rule is a no-op
+   (every desktop and tablet size: 1920×1080 → 100.0, 1280×720 → 66.7, 1080×810 → 56.3), so only the short landscape
+   screens this is for change, and there the HUD keeps the size ratio it has on a desktop and the prep camera stays on
+   the official framing (measured 756×366: ×1.00, 55 %).
+
+   The 28 px floor below is a last-resort guard for less than ~300 px of height; it is not reached by any phone.
+   ========================================================================================== */
+
+@media (orientation: landscape) and (max-height: 480px) {
+  html {
+    font-size: clamp(28px, min(calc(100vw / 19.2), calc(100vh / 10.8)), 240px);
+    /* the small viewport (chrome 108+ / Android WebView 108+): keep the line above for older runtimes */
+    font-size: clamp(28px, min(calc(100vw / 19.2), calc(100svh / 10.8)), 240px);
+  }
+}

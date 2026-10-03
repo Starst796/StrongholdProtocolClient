@@ -92,7 +92,27 @@ cd desktop && npm start
 |---|---|
 | `mobile/capacitor.config.json` | `appId` / `appName`；`webDir` = `../build/client/www`；`android.allowMixedContent` = `true`（见下） |
 | `mobile/android/` | Capacitor 生成的 Gradle 工程（可提交；`assets/public` 与 `local.properties` 已在 `.gitignore` 里忽略） |
-| `mobile/android/app/src/main/AndroidManifest.xml` | 已打开 `usesCleartextTraffic`（局域网 `ws://` 需要；默认仍是 `wss://`） |
+| `mobile/android/app/src/main/AndroidManifest.xml` | `usesCleartextTraffic`（局域网 `ws://` 需要；默认仍是 `wss://`）、`screenOrientation="sensorLandscape"` |
+| `mobile/android/app/src/main/res/values/styles.xml` | `windowLayoutInDisplayCutoutMode=shortEdges`（不这样系统会在横屏把窗口 letterbox，刘海那条就是左边的黑边） |
+| `mobile/android/app/src/main/java/.../MainActivity.java` | 全屏：`setDecorFitsSystemWindows(false)` + 隐藏 system bars（划一下仍能唤出），失焦后重新隐藏 |
+
+### 全屏与手机显示（两个独立问题）
+
+**黑边**：模板给的主题既不让窗口使用刘海区，也没隐藏状态栏 / 导航栏。于是横屏时左边是刘海被 letterbox 出来的黑带，上/下是系统栏（游戏仓库 `test/ui/playtest5-ui.e2e.test.js` 里就记录着这台机器的实测：`2772×1272` 截图、页面 `756×366`、右侧 `141 px` 黑带 = DPR 3.48 下约 41 CSS px）。现在窗口画进刘海区、系统栏隐藏——游戏自己的 `css/devices.css` 已经把 HUD 放在 `env(safe-area-inset-*)` 里，所以这样是安全的。
+
+**准备阶段场景过小**：横屏手机只有 ~366 px 高，而游戏用根字号缩放整个 HUD（`css/theme.css`：`clamp(40px, min(100vw/19.2, 100vh/10.8), 240px)`），`100vh/10.8 ≈ 33.9` 被 **40 px 下限**抬到 40，HUD 就比桌面相对高一截；准备阶段的镜头要避开 HUD（`js/ui/fieldHost.js hudBands` → `js/render/projection.js clearHud`），只能把场景缩小。`shell/display.css`（payload 里是 `/css/shell-display.css`，由补丁挂在 `css/devices.css` 之后）在 `orientation: landscape and max-height: 480px` 下用同一公式、去掉下限，比例回到桌面水平；自动战斗的镜头没有 HUD 约束，所以之前只有准备阶段显得小。
+
+实测（`dev/game-mock.html?phase=PREP`，数字是每个备战格的屏幕像素，桌面基准 122 px；同一次测量还确认备战/临时/后排格在所有视口下 100 % 不被 HUD 遮挡）：
+
+| 视口 | rem | 备战格 px（改前 → 改后） |
+|---|---|---|
+| 756×366 | 40 → 33.9 | 35 → 41.5（+19 %） |
+| 798×366 + 41 px 刘海 | 40 → 33.9 | 35 → 41.5（+19 %） |
+| 800×360 | 40 → 33.3 | 33.8 → 40.8（+21 %） |
+| 915×412 | 40 → 38.1 | 44.5 → 46.7（+5 %） |
+| 1920×1080 桌面 | 100 → 100 | 122.3 → 122.3（不变） |
+
+> 桌面 / 平板不受影响：那些视口 `min(w/19.2, h/10.8) ≥ 40`，覆盖规则等于没写。真机上"系统栏是否消失、刘海是否被填满"需要装到手机上看（本仓库没有模拟器镜像），浏览器侧的比例是按上面这套测量的。
 
 **关于 `allowMixedContent`**：WebView 的页面本身是 `https://localhost`（`androidScheme`），而自建的局域网服务器只有 `ws://`（没有证书），Chromium 会把它当 mixed content 拦掉——`usesCleartextTraffic` 只管系统层的明文策略，管不了这个。所以 APK 里打开了 `allowMixedContent`，让选择服务器页里的 `ws://<局域网地址>:3000` 能用。**代价**：这一层保护没了，页面里的其他连接也可以降级到明文；官方服务器仍然走 `wss://`。不想要局域网联机的话，把 `mobile/capacitor.config.json` 改回 `false` 重新打包即可（`localhost` 属于"可信来源"，不受影响）。
 
@@ -184,6 +204,9 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | 想换服务器但不重新打包 | 桌面：选择服务器页按 F2（或启动时 `--choose-server`）、或 `StrongholdProtocol.exe --server <地址>`；Android：启动时的选择服务器页；网页：`?server=<地址>` |
 | 桌面客户端启动很慢（几十秒） | 用的是单文件 `--portable`：它每次启动都要解压整包到 `%TEMP%`。改用默认的目录版（`win-unpacked/`），启动只要零点几秒 |
 | 桌面客户端弹窗报缺少 DLL / 打不开 | 目录版必须整个文件夹一起拷贝，不能只拿 `StrongholdProtocol.exe`（运行时 DLL 与 `resources/` 在旁边） |
+| APK 里左侧有黑边 / 上下有黑边 | 装的是旧 APK：现在的主题让窗口画进刘海区（`shortEdges`）并隐藏系统栏（`MainActivity` immersive）。重新 `npm run client:android` |
+| 手机横屏时准备阶段场景偏小 | 旧 APK：`shell/display.css` 去掉根字号 40 px 下限后，准备阶段和战斗、和桌面同一个比例（见 §5 的实测表） |
+| 用 puppeteer 量桌面壳时窗口总是 800×600 | puppeteer 的默认视口覆盖了真实窗口尺寸：`puppeteer.connect({ browserURL, defaultViewport: null })` |
 
 ## 9. 素材与许可
 

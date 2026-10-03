@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
-import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, PICKER_FILES, parseCommonArgs } from '../tools/package-client.mjs';
+import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -64,8 +64,9 @@ function makeGameFixture() {
     'diff --git a/public/index.html b/public/index.html',
     '--- a/public/index.html',
     '+++ b/public/index.html',
-    '@@ -1,3 +1,5 @@',
+    '@@ -1,3 +1,6 @@',
     ' <html>',
+    '+<link rel="stylesheet" href="/css/shell-display.css">',
     '+<script src="/js/runtime-config.js"></script>',
     '+<script type="module" src="/js/shell/picker.js"></script>',
     ' <script type="module" src="/js/main.js"></script>',
@@ -96,7 +97,7 @@ describe('unified diff applier', () => {
     const files = parsePatch(readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8'));
     assert.equal(files.length, 3);
     assert.deepEqual(files.map((f) => stripPath(f.newPath, 2)).sort(), [...PATCHED_FILES].sort());
-    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 5);
+    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 6);
   });
 
   test('applies a patch, and refuses to apply it where the context no longer matches', () => {
@@ -185,6 +186,10 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
       const pickerAt = html.indexOf('<script type="module" src="/js/shell/picker.js">');
       assert.ok(pickerAt !== -1, 'index.html must load /js/shell/picker.js');
       assert.ok(pickerAt < html.indexOf('<script type="module" src="/js/main.js"'), 'the picker runs before the game boots');
+      // ...and the shell stylesheet must come after every game stylesheet, so it wins on equal specificity
+      const cssAt = html.indexOf('/css/shell-display.css');
+      assert.ok(cssAt !== -1, 'index.html must link /css/shell-display.css');
+      assert.ok(cssAt > html.lastIndexOf('/css/devices.css'), 'the shell stylesheet is loaded last');
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
@@ -208,8 +213,9 @@ describe('client payload assembly', () => {
     for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json']) {
       assert.ok(existsSync(path.join(out, rel)), `${rel} must be in the payload`);
     }
-    // the picker is copied verbatim, so /js/shell/picker.js can import ../net.js and ./picker-core.js
-    for (const [name, rel] of PICKER_FILES) {
+    // the picker and the display tweaks are copied verbatim, so /js/shell/picker.js can import ../net.js and
+    // ./picker-core.js, and css/shell-display.css overrides css/devices.css by load order
+    for (const [name, rel] of SHELL_FILES) {
       assert.equal(readFileSync(path.join(out, rel), 'utf8'), readFileSync(path.join(ROOT, 'shell', name), 'utf8'));
     }
     // Node-only sim loader is never shipped
@@ -261,6 +267,34 @@ test('the packaged clients default to game.starst.site', () => {
   // ...and the shells ship the same defaults
   assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'mobile', 'capacitor.config.json'), 'utf8')).appId, 'site.starst.stronghold');
   assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build.appId, 'site.starst.stronghold');
+});
+
+describe('mobile (Android) shell', () => {
+  const android = (rel) => readFileSync(path.join(ROOT, 'mobile', 'android', 'app', 'src', 'main', rel), 'utf8');
+
+  test('the window fills the display: cutout allowed, system bars hidden, landscape locked', () => {
+    const manifest = android('AndroidManifest.xml');
+    assert.match(manifest, /android:screenOrientation="sensorLandscape"/, 'the game is landscape-only (see its rotate hint)');
+
+    // both themes the activity can be created with must let the window draw into the cutout strip, otherwise the
+    // system letterboxes it in landscape and that strip is the black bar along the edge
+    const styles = android('res/values/styles.xml');
+    assert.equal((styles.match(/>shortEdges</g) || []).length, 2, 'AppTheme.NoActionBar + AppTheme.NoActionBarLaunch');
+
+    const activity = android('java/site/starst/stronghold/MainActivity.java');
+    assert.match(activity, /WindowCompat\.setDecorFitsSystemWindows\(getWindow\(\), false\)/, 'the WebView draws under the bars');
+    assert.match(activity, /hide\(WindowInsetsCompat\.Type\.systemBars\(\)\)/, 'the bars are hidden (immersive)');
+    assert.match(activity, /onWindowFocusChanged/, 'a swipe or dialog must not leave the bars on screen');
+  });
+
+  test('the shell stylesheet rescales the HUD on short landscape screens only', () => {
+    const css = readFileSync(path.join(ROOT, 'shell', 'display.css'), 'utf8');
+    assert.match(css, /@media \(orientation: landscape\) and \(max-height: 480px\)/);
+    // the same formula as css/theme.css, minus the 40 px floor that made the prep camera zoom the scene out
+    assert.match(css, /clamp\(28px, min\(calc\(100vw \/ 19\.2\), calc\(100svh \/ 10\.8\)\), 240px\)/);
+    const declarations = css.replace(/\/\*[\s\S]*?\*\//g, ''); // prose mentions the old formula
+    assert.ok(!/clamp\(40px/.test(declarations), 'the 40 px floor is exactly what the override removes');
+  });
 });
 
 describe('desktop packaging layout', () => {

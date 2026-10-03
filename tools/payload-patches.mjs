@@ -1,11 +1,13 @@
 // Applies patches/game-client.patch to an assembled payload.
 //
-// The game repo is kept byte-identical to upstream (that is the point of the split), so the three source-level hooks
-// that let a packaged client talk to a remote server live here as a patch instead of as commits in the game repo:
+// The game repo is kept byte-identical to upstream (that is the point of the split), so the source-level hooks that
+// let a packaged client talk to a remote server and look right on a phone live here as a patch instead of as commits
+// in the game repo:
 //
 //   js/net.js            defaultWsUrl() honours globalThis.__SP_SERVER__ and ?server=host
 //   js/screens/room.js   invite links (复制链接 / ?room=CODE) point at the remote web client
-//   index.html           loads /js/runtime-config.js before the module graph
+//   index.html           loads /js/runtime-config.js + /js/shell/picker.js before the module graph, and the shell
+//                        stylesheet (css/shell-display.css) after the game's own CSS
 //
 // It is a normal `git diff` against the game's public/ tree, so it is applied with `-p2` (payload root ↔ public/).
 // The patch target is the payload copy — the game checkout is never touched. When upstream edits one of those files
@@ -59,4 +61,6 @@ export function assertPatched(payloadRoot) {
   if (!net.includes('resolveServerTarget') || !net.includes('__SP_SERVER__')) throw new Error('payload js/net.js 没有被补丁改到（找不到 __SP_SERVER__ 支持）');
   if (!room.includes('toHttpUrl')) throw new Error('payload js/screens/room.js 没有被补丁改到（邀请链接仍是本地地址）');
   if (!html.includes('/js/runtime-config.js')) throw new Error('payload index.html 没有被补丁改到（缺少 runtime-config.js 的 <script>）');
+  if (!html.includes('/js/shell/picker.js')) throw new Error('payload index.html 没有被补丁改到（缺少选择服务器页的 <script>）');
+  if (!html.includes('/css/shell-display.css')) throw new Error('payload index.html 没有被补丁改到（缺少 shell-display.css 的 <link>）');
 }

@@ -75,8 +75,11 @@ export function buildDesktop(o = {}) {
   const artifacts = [];
   const appDir = path.join(out, 'win-unpacked');
   if (fs.existsSync(appDir)) artifacts.push({ rel: 'build/desktop/win-unpacked/', dir: appDir });
-  for (const f of fs.existsSync(out) ? fs.readdirSync(out).filter((f) => f.endsWith('.exe')) : []) {
-    artifacts.push({ rel: `build/desktop/${f}`, file: path.join(out, f) });
+  // only report the single-file exe when this run built it: an older one may still sit in the output directory
+  if (targets.includes('portable')) {
+    for (const f of fs.existsSync(out) ? fs.readdirSync(out).filter((f) => f.endsWith('.exe')) : []) {
+      artifacts.push({ rel: `build/desktop/${f}`, file: path.join(out, f) });
+    }
   }
   const sizes = {};
   for (const a of artifacts) {

@@ -13,10 +13,16 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- The game fills the display: draw into the display-cutout strip instead of letting the system letterbox
+             the window in landscape (that strip was the black bar along the left/right edge). The web app keeps its
+             HUD inside the safe area (public/css/devices.css uses env(safe-area-inset-*)). API 24-26 ignore it. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <!-- the splash screen covers the same area as the game, so the cutout strip never flashes black -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>
