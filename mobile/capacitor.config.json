@@ -1,0 +1,11 @@
+{
+  "appId": "site.starst.stronghold",
+  "appName": "卫戍协议",
+  "webDir": "../build/client/www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

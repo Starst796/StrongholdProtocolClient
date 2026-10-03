@@ -1,0 +1,12 @@
+{
+  "name": "stronghold-protocol-android",
+  "version": "0.1.0",
+  "private": true,
+  "description": "卫戍协议：盟约 · Android 客户端（Capacitor 壳：本地静态资源 + 连接 game.starst.site）",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2"
+  }
+}

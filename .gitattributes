@@ -1,0 +1,19 @@
+# Same policy as the game repo: normalise line endings in the repository, LF in the working tree for everything the
+# build reads line by line — the payload patch above all, since a CRLF checkout must not change what gets applied.
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf
+*.mjs text eol=lf
+*.js  text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.gradle text eol=lf
+*.patch text eol=lf
+# binary
+*.png binary
+*.ico binary
+*.jar binary

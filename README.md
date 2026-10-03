@@ -1,0 +1,60 @@
+# Stronghold Protocol · 端侧客户端打包
+
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows `.exe`**（Electron）和 **Android `.apk`**（Capacitor），默认连接 **`game.starst.site`**：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走远程服务器。
+
+游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
+本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
+
+```
+npm run client:desktop      # → build/desktop/StrongholdProtocol-0.1.0-portable.exe（约 260 MB）
+npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（约 192 MB）
+npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
+npm test                    # 打包流程的单元/契约测试（无游戏 checkout 时相关用例自动跳过）
+```
+
+详细说明（Android SDK 准备、签名、排错）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**。
+
+## 前置
+
+| | 需要 |
+|---|---|
+| 通用 | Node.js 22+；一个**游戏仓库 checkout**（默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets`（素材不在 GitHub 仓里） |
+| exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装，首次约 500 MB） |
+| apk | JDK 17+（`JAVA_HOME`）+ Android SDK（`ANDROID_HOME`，`platforms;android-36`、`build-tools;36.0.0`） |
+
+## 目录
+
+| 路径 | 内容 |
+|---|---|
+| `tools/package-client.mjs` | 把游戏仓库的挂载点摊平成 `build/client/www`，生成 `data.js` / `js/runtime-config.js` / `build.json`，并应用 payload 补丁 |
+| `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
+| `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
+| `patches/game-client.patch` | 3 处客户端改动（见下），`git diff` 生成 |
+| `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务 + 窗口；`icon.ico` |
+| `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
+| `client.config.json` | `gameRoot`、`defaultServer` |
+| `test/packaging.test.js` | 补丁/契约/摊平/增量的测试 |
+
+## 与游戏仓库的契约（重要）
+
+- **游戏仓库只读**：`git status` 永远干净，`git pull` 不会因为打包而冲突。客户端的 3 处改动是补丁：
+  `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`index.html`（模块图之前载入 `/js/runtime-config.js`）。
+- 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。此时重新生成 `patches/game-client.patch` 即可。
+- `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照 `server/index.js` 校验。
+- 产物里记录构建来源：payload 的 `build.json` 与 `build/client/manifest.json` 都有 `git describe` + commit + `PROTOCOL_VERSION`。
+
+## 用法
+
+```bash
+npm run client:desktop -- --server 192.168.1.9:3000   # 换成局域网服务器
+npm run client:android -- --server 192.168.1.9:3000
+npm run client:desktop -- --dir                        # 只出 win-unpacked/（快，便于试跑）
+npm run client:android -- --release                    # 未签名 release APK
+node tools/package-client.mjs --game ../Stronghold-Protocol --out D:\client-www
+```
+
+桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--fullscreen`、F11/F5/F12）。
+
+## 许可
+
+本仓库自有代码 GPL-3.0-or-later（与游戏本体相同）。打包产物里含《明日方舟》美术 / 音频素材，版权归鹰角网络 / Yostar，**不适用** GPL，仅限个人非商业自用，请勿再分发（见上游 [声明](https://github.com/sganggs/Stronghold-Protocol#声明) 与 [NOTICE.md](https://github.com/sganggs/Stronghold-Protocol/blob/master/NOTICE.md)）。

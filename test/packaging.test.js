@@ -1,0 +1,253 @@
+// Pins the contracts this repo has with the game repo (Stronghold-Protocol) and with its own build output:
+//
+//   * the payload patch (patches/game-client.patch) is applied by tools/unified-diff.mjs, not by git �?its format
+//     assumptions are asserted here, and the patch is re-applied to a pristine copy of the real checkout so that
+//     upstream drift fails the tests instead of shipping a client that connects to the wrong server;
+//   * DATA_SHIM_JS / SIM_PRIVATE are duplicated in tools/game-contract.mjs (so the build needs no `npm install` in
+//     the game checkout) and must still match server/index.js;
+//   * assembling a payload flattens exactly the mounts server/index.js exposes, into an incremental directory.
+//
+// Tests that need a game checkout skip themselves when it is absent (a fresh clone without the sibling checkout).
+
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
+import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
+import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
+import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT } from '../tools/package-client.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** The game checkout, or null (then the contract tests skip themselves). */
+const GAME_ROOT = (() => {
+  try {
+    return findGameRoot({ clientRoot: ROOT });
+  } catch {
+    return null;
+  }
+})();
+
+const write = (root, rel, body) => {
+  const p = path.join(root, rel);
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeFileSync(p, body);
+};
+
+/** A tiny game checkout: only the files the assembler / contract reader looks at. */
+function makeGameFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), 'sp-game-'));
+  const patch = mkdtempSync(path.join(tmpdir(), 'sp-patch-'));
+  // public/ �?payload root
+  write(root, 'public/index.html', '<html>\n<script type="module" src="/js/main.js"></script>\n</html>\n');
+  write(root, 'public/js/net.js', "// net\n/** WebSocket URL. */\nexport function defaultWsUrl() { return 'ws://x/ws'; }\n");
+  write(root, 'public/js/screens/room.js', '// room\n/** Invite link. */\nexport function inviteLink(code) { return `?room=${code}`; }\n');
+  write(root, 'public/js/main.js', 'export {};\n');
+  write(root, 'public/assets/char/x.png', 'png');
+  // data/, shared/, server/
+  write(root, 'data/chess.json', '{"a":1}');
+  write(root, 'shared/constants.js', "export const PROTOCOL_VERSION = 1;\nexport const APP_VERSION = '0.1.0';\n");
+  write(root, 'server/sim/simdata.js', 'export function getSimData() { return null; }\n');
+  write(root, 'server/sim/units.js', 'export const U = 1;\n');
+  write(root, 'server/sim/content/support/index.js', 'export const S = 1;\n');
+  write(root, 'server/sim/nodeData.js', 'node only\n');
+  // the two declarations tools/game-contract.mjs mirrors (kept byte-identical to the real values)
+  write(root, 'server/index.js', `export const DATA_SHIM_JS = \`${DATA_SHIM_JS}\`;\nconst SIM_PRIVATE = new Set(['nodedata.js']);\n`);
+  // a stand-in for patches/game-client.patch, against the three files above
+  const patchFile = path.join(patch, 'game-client.patch');
+  writeFileSync(patchFile, [
+    'diff --git a/public/index.html b/public/index.html',
+    '--- a/public/index.html',
+    '+++ b/public/index.html',
+    '@@ -1,3 +1,4 @@',
+    ' <html>',
+    '+<script src="/js/runtime-config.js"></script>',
+    ' <script type="module" src="/js/main.js"></script>',
+    ' </html>',
+    'diff --git a/public/js/net.js b/public/js/net.js',
+    '--- a/public/js/net.js',
+    '+++ b/public/js/net.js',
+    '@@ -1,3 +1,4 @@',
+    ' // net',
+    '+// patched: resolveServerTarget reads globalThis.__SP_SERVER__ and ?server=',
+    ' /** WebSocket URL. */',
+    " export function defaultWsUrl() { return 'ws://x/ws'; }",
+    'diff --git a/public/js/screens/room.js b/public/js/screens/room.js',
+    '--- a/public/js/screens/room.js',
+    '+++ b/public/js/screens/room.js',
+    '@@ -1,3 +1,4 @@',
+    ' // room',
+    '+// patched: invite links use toHttpUrl()',
+    ' /** Invite link. */',
+    ' export function inviteLink(code) { return `?room=${code}`; }',
+    '',
+  ].join('\n'));
+  return { root, patchFile };
+}
+
+describe('unified diff applier', () => {
+  test('parses files and hunks', () => {
+    const files = parsePatch(readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8'));
+    assert.equal(files.length, 3);
+    assert.deepEqual(files.map((f) => stripPath(f.newPath, 2)).sort(), [...PATCHED_FILES].sort());
+    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 5);
+  });
+
+  test('applies a patch, and refuses to apply it where the context no longer matches', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-diff-'));
+    try {
+      write(dir, 'a.txt', 'one\ntwo\nthree\n');
+      const patch = '--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,4 @@\n one\n+inserted\n two\n three\n';
+      applyPatch(dir, patch, { strip: 1 });
+      assert.equal(readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'one\ninserted\ntwo\nthree\n');
+      // the context is gone now ("one / two / three" are no longer consecutive) �?the applier must fail, not guess
+      assert.throws(() => applyPatch(dir, patch, { strip: 1 }), /does not match/);
+      write(dir, 'b.txt', 'nothing\nlike\nthis\n');
+      assert.throws(() => applyPatch(dir, '--- a/b.txt\n+++ b/b.txt\n@@ -1,3 +1,4 @@\n one\n+inserted\n two\n three\n', { strip: 1 }), /does not match/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses paths that escape the root', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-diff-'));
+    try {
+      assert.throws(() => applyPatch(dir, '--- a/../../evil.txt\n+++ b/../../evil.txt\n@@ -1 +1 @@\n-x\n+y\n', { strip: 1 }), /escapes/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps CRLF line endings', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-diff-'));
+    try {
+      write(dir, 'c.txt', 'one\r\ntwo\r\n');
+      applyPatch(dir, '--- a/c.txt\n+++ b/c.txt\n@@ -1,2 +1,3 @@\n one\n+mid\n two\n', { strip: 1 });
+      assert.equal(readFileSync(path.join(dir, 'c.txt'), 'utf8'), 'one\r\nmid\r\ntwo\r\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol checkout next to this repo' }, () => {
+  test('the patch is plain `git diff` output (what the applier supports)', () => {
+    const text = readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8');
+    assert.ok(!/\r/.test(text), 'no CRLF');
+    assert.ok(!/\\ No newline/.test(text), 'no "\\ No newline at end of file" markers');
+    assert.ok(!/^(rename|copy|new file|deleted file|old mode|new mode|similarity)/m.test(text), 'no renames/mode changes');
+    assert.ok(!text.includes('\uFEFF'), 'no BOM');
+  });
+
+  test('DATA_SHIM_JS / SIM_PRIVATE match server/index.js', () => {
+    assert.doesNotThrow(() => verifyGameContract(GAME_ROOT));
+    const { shim, simPrivate } = readGameContract(readFileSync(path.join(GAME_ROOT, 'server', 'index.js'), 'utf8'));
+    assert.equal(shim, DATA_SHIM_JS);
+    assert.deepEqual(simPrivate, [...SIM_PRIVATE]);
+    assert.equal(typeof readProtocolVersion(GAME_ROOT), 'number');
+    assert.ok(isGameRoot(GAME_ROOT));
+  });
+
+  test('the shell serves the payload with the game server"s MIME table', async () => {
+    const { MIME } = await import('../desktop/serve.mjs');
+    const src = readFileSync(path.join(GAME_ROOT, 'server', 'index.js'), 'utf8');
+    const block = /export const MIME = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(src);
+    assert.ok(block, 'MIME 表解析失败：游戏仓库 server/index.js 的 MIME 写法变了');
+    const pairs = [...block[1].matchAll(/'([^']+)':\s*'([^']+)'/g)].map((m) => [m[1], m[2]]);
+    assert.ok(pairs.length > 20, `MIME 表只解析出 ${pairs.length} 条，解析可能失效`);
+    assert.deepEqual({ ...MIME }, Object.fromEntries(pairs));
+  });
+
+  test('the payload patch still applies to this checkout (upstream drift fails the build)', () => {
+    const out = mkdtempSync(path.join(tmpdir(), 'sp-payload-'));
+    try {
+      for (const f of PATCHED_FILES) {
+        write(out, f, readFileSync(path.join(GAME_ROOT, 'public', f), 'utf8'));
+      }
+      const applied = applyPayloadPatch({ gameRoot: GAME_ROOT, payloadRoot: out });
+      assert.deepEqual([...applied].sort(), [...PATCHED_FILES].sort());
+      assert.doesNotThrow(() => assertPatched(out));
+      const net = readFileSync(path.join(out, 'js', 'net.js'), 'utf8');
+      assert.match(net, /export function toWsUrl\(raw\)/);
+      assert.match(net, /export function toHttpUrl\(raw\)/);
+      // the patched defaultWsUrl must consult the override before falling back to the page's own origin
+      assert.match(net, /const target = resolveServerTarget\(loc\);/);
+      assert.match(readFileSync(path.join(out, 'js', 'screens', 'room.js'), 'utf8'), /toHttpUrl\(target\)/);
+      assert.match(readFileSync(path.join(out, 'index.html'), 'utf8'), /<script src="\/js\/runtime-config\.js"><\/script>/);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('client payload assembly', () => {
+  let game;
+  before(() => { game = makeGameFixture(); });
+  after(() => {
+    rmSync(game.root, { recursive: true, force: true });
+    rmSync(path.dirname(game.patchFile), { recursive: true, force: true });
+  });
+
+  test('flattens the server mounts, writes the generated files and applies the patch', () => {
+    const out = path.join(game.root, 'build', 'client', 'www');
+    const r = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {} });
+    assert.equal(r.server, DEFAULT_SERVER);
+    assert.equal(r.missingAssets, false);
+    assert.equal(r.patched.length, PATCHED_FILES.length);
+    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'data/local-assets.json']) {
+      assert.ok(existsSync(path.join(out, rel)), `${rel} must be in the payload`);
+    }
+    // Node-only sim loader is never shipped
+    assert.ok(!existsSync(path.join(out, 'sim', 'nodeData.js')));
+    // /data.js is the game's shim, byte for byte
+    assert.equal(readFileSync(path.join(out, 'data.js'), 'utf8'), DATA_SHIM_JS);
+    // the empty local-art manifest stands in for the server's synthesised response
+    assert.deepEqual(JSON.parse(readFileSync(path.join(out, 'data', 'local-assets.json'), 'utf8')).groups, {});
+    // the packaged client's server address + build provenance
+    assert.equal(readFileSync(path.join(out, 'js', 'runtime-config.js'), 'utf8'), runtimeConfigSource(DEFAULT_SERVER));
+    const build = JSON.parse(readFileSync(path.join(out, 'build.json'), 'utf8'));
+    assert.equal(build.server, DEFAULT_SERVER);
+    assert.equal(build.game.app, '0.1.0');
+    assert.equal(build.game.protocol, 1);
+    // the patch landed on the payload copy, not on the checkout
+    assert.doesNotThrow(() => assertPatched(out));
+    assert.match(readFileSync(path.join(out, 'js', 'net.js'), 'utf8'), /__SP_SERVER__/);
+    assert.ok(!readFileSync(path.join(game.root, 'public', 'js', 'net.js'), 'utf8').includes('__SP_SERVER__'), 'the checkout is never modified');
+    // manifest.json lands next to www/ for the build scripts
+    assert.equal(JSON.parse(readFileSync(path.join(game.root, 'build', 'client', 'manifest.json'), 'utf8')).server, DEFAULT_SERVER);
+  });
+
+  test('is incremental and drops payload files whose source is gone', () => {
+    const out = path.join(game.root, 'build', 'client', 'www');
+    const second = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {} });
+    assert.equal(second.copied, 0, 'nothing is rewritten when nothing changed');
+    const stale = path.join(out, 'js', 'deleted.js');
+    writeFileSync(stale, 'export {};\n');
+    const third = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {} });
+    assert.equal(third.removed, 1);
+    assert.ok(!existsSync(stale));
+  });
+
+  test('a custom --server address is what the payload connects to', () => {
+    const out = path.join(game.root, 'build', 'other', 'www');
+    const r = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, server: '192.168.1.9:3000', out, log: () => {} });
+    assert.equal(r.server, '192.168.1.9:3000');
+    assert.match(readFileSync(path.join(r.out, 'js', 'runtime-config.js'), 'utf8'), /"192\.168\.1\.9:3000"/);
+  });
+});
+
+test('the packaged clients default to game.starst.site', () => {
+  assert.equal(DEFAULT_SERVER, 'game.starst.site');
+  assert.match(runtimeConfigSource(DEFAULT_SERVER), /globalThis\.__SP_SERVER__ = "game\.starst\.site";/);
+  // client.config.json points at the sibling checkout and the official server
+  const config = JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'client.config.json'), 'utf8'));
+  assert.equal(config.gameRoot, '../Stronghold-Protocol');
+  assert.equal(config.defaultServer, DEFAULT_SERVER);
+  // ...and the shells ship the same defaults
+  assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'mobile', 'capacitor.config.json'), 'utf8')).appId, 'site.starst.stronghold');
+  assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build.appId, 'site.starst.stronghold');
+});

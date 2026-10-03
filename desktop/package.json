@@ -1,0 +1,49 @@
+{
+  "name": "stronghold-protocol-client",
+  "productName": "StrongholdProtocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "卫戍协议：盟约 · 桌面客户端（Electron 壳：本地静态资源 + 连接 game.starst.site）",
+  "license": "GPL-3.0-or-later",
+  "author": "Stronghold Protocol contributors",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "site.starst.stronghold",
+    "productName": "StrongholdProtocol",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "../build/desktop"
+    },
+    "files": [
+      "main.mjs",
+      "serve.mjs",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/client/www",
+        "to": "www"
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "icon.ico"
+    },
+    "portable": {
+      "artifactName": "StrongholdProtocol-${version}-portable.exe"
+    }
+  }
+}
