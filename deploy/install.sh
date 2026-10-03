@@ -112,6 +112,8 @@ if [ "$MODE" = "timer" ]; then
   [ -n "$REMOTE" ] || { echo "--mode timer needs --remote <git url> (the repo the server should pull from)" >&2; exit 1; }
   install -m 644 "$HERE/stronghold-deploy.service" /etc/systemd/system/stronghold-deploy.service
   install -m 644 "$HERE/stronghold-deploy.timer" /etc/systemd/system/stronghold-deploy.timer
+  # systemd mis-parses unit files with CRLF ("... is not a valid unit name"), so strip CR from a Windows checkout.
+  sed -i 's/\r$//' /etc/systemd/system/stronghold-deploy.service /etc/systemd/system/stronghold-deploy.timer
 else
   # Non-bare repo with the branch checked out: git refuses pushes unless told otherwise. The hook does the update
   # ("ignore"), not "updateInstead", because the running server keeps rewriting the tracked data/assets.json.
@@ -122,7 +124,7 @@ else
 fi
 
 cat > "$CONF" <<EOF
-# Auto-deploy configuration (see scripts/deploy/deploy.sh --help). After editing:
+# Auto-deploy configuration (see deploy/deploy.sh --help). After editing:
 #   sudo systemctl restart stronghold-deploy.timer    # timer mode
 #   (hook mode reads it on the next push)
 SP_DEPLOY_REPO=$REPO
