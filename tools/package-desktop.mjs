@@ -1,19 +1,31 @@
-// Builds the desktop client (.exe): assemble the payload from a game checkout, install the Electron shell's deps
-// when needed, then run electron-builder. See docs/PACKAGING.md.
+// Builds the desktop client: assemble the payload from a game checkout, install the Electron shell's deps when
+// needed, then run electron-builder. See docs/PACKAGING.md.
 //
-//   node tools/package-desktop.mjs [--server game.starst.site] [--game <checkout>] [--dir] [--skip-install]
+//   node tools/package-desktop.mjs [--server <addr>] [--game <checkout>] [--portable] [--skip-install]
 //
 //   --server <addr>   game server the client connects to (default: client.config.json / game.starst.site)
 //   --game <dir>      Stronghold-Protocol checkout (default: SP_GAME_ROOT / client.config.json / ../Stronghold-Protocol)
-//   --dir             build the unpacked app directory only (fast; no portable single-file exe)
+//   --portable        single-file portable .exe instead of the folder (it unpacks the whole app to %TEMP% on
+//                     *every* launch: ~24 s to the first screen versus ~0.5 s for the folder)
 //   --skip-install    do not run `npm install` in desktop/ even when electron is missing
+//
+// The default target is the folder (`dir`) → `build/desktop/win-unpacked/`: a normal .exe with its DLLs, locales
+// and resources/ beside it. That is what gets distributed (zip it yourself, see docs/PACKAGING.md §4). Either way
+// the game's ~245 MB of art/audio sits in resources/www, so nothing shrinks — but the folder starts instantly,
+// while a single-file exe must extract all of it to %TEMP% before the window can appear.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, assembleClient, parseCommonArgs } from './package-client.mjs';
 
 const DESKTOP = path.join(CLIENT_ROOT, 'desktop');
+
+/** electron-builder targets for the requested output (see the header). */
+export function desktopTargets({ portable = false } = {}) {
+  return [portable ? 'portable' : 'dir'];
+}
 
 /** PATH with the running Node first: npm lifecycle scripts locate `node` from it. */
 function childEnv() {
@@ -37,27 +49,46 @@ function run(cmd, args, cwd) {
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} exited with ${r.status}`);
 }
 
-const o = parseCommonArgs(process.argv.slice(2));
-if (o.help) {
-  console.log('usage: node tools/package-desktop.mjs [--server <address>] [--game <checkout>] [--dir] [--skip-install]');
-  process.exit(0);
-}
-const built = assembleClient({ server: o.server, gameRoot: o.game });
-
-const builder = pkgBin(path.join(DESKTOP, 'node_modules', 'electron-builder'), 'electron-builder');
-const electronDist = path.join(DESKTOP, 'node_modules', 'electron', 'dist');
-if (!builder || !fs.existsSync(electronDist)) {
-  if (o.skipInstall) throw new Error('desktop/node_modules 不完整 —— 先在 desktop/ 里跑 `npm install`');
-  console.log('package-desktop: 安装 Electron 壳依赖（首次约 500 MB）…');
-  run('npm', ['install', '--no-audit', '--no-fund'], DESKTOP);
+/** Total size of a directory tree. */
+function dirBytes(dir) {
+  let n = 0;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) n += e.isDirectory() ? dirBytes(path.join(dir, e.name)) : fs.statSync(path.join(dir, e.name)).size;
+  return n;
 }
 
-console.log(`package-desktop: 构建 ${o.dir ? '未打包目录' : '单文件 portable exe'}（服务器 ${built.server}，游戏 ${built.game.describe || built.game.app}）…`);
-run(process.execPath, [builder, '--win', ...(o.dir ? ['dir'] : ['portable']), '--x64'], DESKTOP);
+export function buildDesktop(o = {}) {
+  const built = assembleClient({ server: o.server, gameRoot: o.game });
 
-const out = path.join(CLIENT_ROOT, 'build', 'desktop');
-for (const f of fs.existsSync(out) ? fs.readdirSync(out).filter((f) => f.endsWith('.exe')) : []) {
-  const st = fs.statSync(path.join(out, f));
-  console.log(`package-desktop: ${path.join('build', 'desktop', f)} (${(st.size / 1048576).toFixed(1)} MB)`);
+  const builder = pkgBin(path.join(DESKTOP, 'node_modules', 'electron-builder'), 'electron-builder');
+  const electronDist = path.join(DESKTOP, 'node_modules', 'electron', 'dist');
+  if (!builder || !fs.existsSync(electronDist)) {
+    if (o.skipInstall) throw new Error('desktop/node_modules 不完整 —— 先在 desktop/ 里跑 `npm install`');
+    console.log('package-desktop: 安装 Electron 壳依赖（首次约 500 MB）…');
+    run('npm', ['install', '--no-audit', '--no-fund'], DESKTOP);
+  }
+
+  const targets = desktopTargets(o);
+  console.log(`package-desktop: 构建 ${targets.join(' + ')}（服务器 ${built.server}，游戏 ${built.game.describe || built.game.app}）…`);
+  run(process.execPath, [builder, '--win', targets[0], '--x64'], DESKTOP);
+
+  const out = path.join(CLIENT_ROOT, 'build', 'desktop');
+  const artifacts = [];
+  const appDir = path.join(out, 'win-unpacked');
+  if (fs.existsSync(appDir)) artifacts.push({ rel: 'build/desktop/win-unpacked/', dir: appDir });
+  for (const f of fs.existsSync(out) ? fs.readdirSync(out).filter((f) => f.endsWith('.exe')) : []) {
+    artifacts.push({ rel: `build/desktop/${f}`, file: path.join(out, f) });
+  }
+  const sizes = {};
+  for (const a of artifacts) {
+    const bytes = a.dir ? dirBytes(a.dir) : fs.statSync(a.file).size;
+    sizes[a.rel] = bytes;
+    console.log(`package-desktop: ${a.rel} —— ${(bytes / 1048576).toFixed(1)} MB${a.dir ? '（解压后目录）' : ''}`);
+  }
+  return { ...built, targets, artifacts: artifacts.map((a) => a.rel), sizes };
 }
-console.log(`package-desktop: 免安装目录版 build/desktop/win-unpacked/StrongholdProtocol.exe`);
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const o = parseCommonArgs(process.argv.slice(2));
+  if (o.help) console.log('usage: node tools/package-desktop.mjs [--server <address>] [--game <checkout>] [--portable] [--skip-install]');
+  else buildDesktop(o);
+}

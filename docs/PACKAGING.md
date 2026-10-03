@@ -3,7 +3,7 @@
 把浏览器客户端和本机素材打进**桌面 / Android 可执行文件**：素材和代码从本地读取，房间、回合、联机仍然连远程服务器——默认 **`game.starst.site`**。
 
 ```
-npm run client:desktop      # → build/desktop/StrongholdProtocol-0.1.0-portable.exe（约 260 MB）
+npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB）
 npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
 ```
@@ -25,7 +25,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 | 目标 | 需要 |
 |---|---|
 | 通用 | Node.js 22 / 24；一个**游戏仓库 checkout**（`Stronghold-Protocol`，默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets` 下载素材——**没有素材的客户端只是个空壳** |
-| exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装） |
+| exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装）；出 zip 用资源管理器右键，出 7z/zip 更小可用 7-Zip（可选） |
 | apk | JDK 17+（`JAVA_HOME`）、Android SDK（`ANDROID_HOME`）含 `platforms;android-36` 与 `build-tools;36.0.0`、并已接受许可协议（见 §5） |
 
 ## 3. 命令与参数
@@ -34,11 +34,13 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 npm run client:build                                    # 只生成 build/client/www
 npm run client:desktop -- --server 192.168.1.9:3000     # 换成局域网服务器
 npm run client:android -- --server 192.168.1.9:3000
-npm run client:desktop -- --dir                         # 只出 win-unpacked/ 目录（快，便于试跑）
+npm run client:desktop -- --portable                    # 单文件便携 exe（启动慢，见 §4）
 npm run client:desktop -- --skip-install                # 不自动 npm install
 npm run client:android -- --release                     # 未签名 release APK
 node tools/package-client.mjs --game D:\gits\Stronghold-Protocol --out D:\client-www
 ```
+
+`--dir` 仍被接受，但它现在就是默认值（目录版）。
 
 `--server` 接受 `host`、`host:port`、`http(s)://…`、`ws(s)://…`。私有地址（`localhost`、`127.*`、`10.*`、`192.168.*`、`172.16–31.*`）自动用 `ws://`，其余用 `wss://`。
 
@@ -46,21 +48,38 @@ node tools/package-client.mjs --game D:\gits\Stronghold-Protocol --out D:\client
 
 网页版也可以临时改服务器：`https://game.starst.site/?server=192.168.1.9:3000`（只对本次会话生效）。
 
-## 4. 桌面版（exe）
+## 4. 桌面版
 
 | 文件 | 说明 |
 |---|---|
 | `desktop/main.mjs` | Electron 主进程：起本地静态服务、开窗口、外链走系统浏览器、F2（选择服务器）/ F11 / F5 / F12 快捷键、`--choose-server` |
 | `desktop/serve.mjs` | 只监听 `127.0.0.1` 的静态服务（MIME 表与游戏仓库 `server/index.js` 一致，由 `test/packaging.test.js` 锁定） |
-| `desktop/package.json` | electron / electron-builder 与打包配置（`extraResources` 把 `build/client/www` 放进 `resources/www`） |
+| `desktop/package.json` | electron / electron-builder 与打包配置（`extraResources` 把 `build/client/www` 放进 `resources/www`；`electronLanguages` 只保留 `zh-CN`/`en-US`） |
 | `desktop/icon.ico` | 应用图标（取自客户端自带的盾牌图标） |
 
-产物：
+### 4.1 产物形态：默认目录版，不是单文件
 
-- `build/desktop/StrongholdProtocol-0.1.0-portable.exe` —— 单文件免安装（首次启动会解压到临时目录，稍慢）。
-- `build/desktop/win-unpacked/StrongholdProtocol.exe` —— 目录版，直接双击即可（调试用）。
+```
+build/desktop/win-unpacked/     ← 分发这个目录
+  StrongholdProtocol.exe        234 MB   ← Electron 本体（改名 + 图标 + 版本信息）
+  resources/www/                265 MB   ← 游戏 payload（素材与代码，见 §1）
+  locales/                      ~2 MB    ← 只留 zh-CN / en-US（默认 55 个语言包约 48 MB）
+  *.dll, *.pak, *.bin           ~80 MB   ← Chromium / V8 运行时（一个都不能少）
+```
 
-运行参数：`StrongholdProtocol.exe --server <地址>`、`--fullscreen`。开发时：
+| 形态 | 体积 | 启动到首屏 | 说明 |
+|---|---|---|---|
+| **目录版（`npm run client:desktop`）** | 585 MB | **约 0.3 s** | 双击 `win-unpacked/StrongholdProtocol.exe` |
+| 目录版打成 zip 分发 | 321 MB | 解压一次后同上 | 资源管理器右键"压缩到 zip"即可（本机实测：585 MB → 321 MB，28 s） |
+| 单文件 `--portable` | 261 MB | **约 24 s** | 每次启动都把整包解压到 `%TEMP%`（本机实测解压 389 MB 时已用 14 s） |
+
+分发就用**目录版 + 手动 zip**：下载 321 MB，解压一次，之后每次启动都是 0.3 s。单文件只小 60 MB，却要每次启动等你 24 s，所以它退成了 `--portable` 选项（`desktop/` 里也有 `npm run pack:portable`）。
+
+> 让 zip 更小：装了 [7-Zip](https://www.7-zip.org/) 的话用 `7z a -mx=9 dist.7z build/desktop/win-unpacked`，LZMA2 通常比 zip 再小 10~15%，但要收件人装 7-Zip 才能解。
+
+### 4.2 运行参数
+
+`StrongholdProtocol.exe --server <地址>`、`--choose-server`、`--fullscreen`；快捷键 F2（选择服务器）/ F11 / F5 / F12。开发时：
 
 ```bash
 node tools/package-desktop.mjs --skip-install   # 先生成 build/client/www
@@ -163,6 +182,8 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | APK 报找不到 SDK / JDK | 检查 `ANDROID_HOME`、`JAVA_HOME`、`mobile/android/local.properties`；platform / build-tools 版本要匹配 `mobile/android/variables.gradle`（当前 36） |
 | `sdkmanager` 报 “Package platforms not found” | 分号被 shell 拆开了，改用 `--package_file`（见 §5） |
 | 想换服务器但不重新打包 | 桌面：选择服务器页按 F2（或启动时 `--choose-server`）、或 `StrongholdProtocol.exe --server <地址>`；Android：启动时的选择服务器页；网页：`?server=<地址>` |
+| 桌面客户端启动很慢（几十秒） | 用的是单文件 `--portable`：它每次启动都要解压整包到 `%TEMP%`。改用默认的目录版（`win-unpacked/`），启动只要零点几秒 |
+| 桌面客户端弹窗报缺少 DLL / 打不开 | 目录版必须整个文件夹一起拷贝，不能只拿 `StrongholdProtocol.exe`（运行时 DLL 与 `resources/` 在旁边） |
 
 ## 9. 素材与许可
 

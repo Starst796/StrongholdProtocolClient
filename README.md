@@ -1,12 +1,12 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows `.exe`**（Electron）和 **Android `.apk`**（Capacitor），默认连接 **`game.starst.site`**：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走远程服务器。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor），默认连接 **`game.starst.site`**：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走远程服务器。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
 
 ```
-npm run client:desktop      # → build/desktop/StrongholdProtocol-0.1.0-portable.exe（约 260 MB）
+npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB，双击即开）
 npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（约 192 MB）
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
 npm test                    # 打包流程的单元/契约测试（无游戏 checkout 时相关用例自动跳过）
@@ -31,7 +31,7 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
 | `patches/game-client.patch` | 3 处客户端 + 1 处选择页改动（见下），`git diff` 生成 |
 | `shell/picker.js`、`shell/picker-core.js` | 端侧"选择服务器"页（进游戏前覆盖启动画面）：探测服务器、记住上次选择、自定义地址；`picker-core.js` 是纯逻辑（可单测） |
-| `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务 + 窗口；`icon.ico` |
+| `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务 + 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
 | `client.config.json` | `gameRoot`、`defaultServer` |
 | `test/packaging.test.js`、`test/picker.test.js` | 补丁/契约/摊平/增量的测试；选择页规则的测试 |
@@ -49,12 +49,26 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 ```bash
 npm run client:desktop -- --server 192.168.1.9:3000   # 换成局域网服务器
 npm run client:android -- --server 192.168.1.9:3000
-npm run client:desktop -- --dir                        # 只出 win-unpacked/（快，便于试跑）
+npm run client:desktop -- --portable                   # 单文件便携 exe（分发方便，启动慢，见下）
 npm run client:android -- --release                    # 未签名 release APK
 node tools/package-client.mjs --game ../Stronghold-Protocol --out D:\client-www
 ```
 
-桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--fullscreen`、F11/F5/F12）。
+桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--choose-server`、`--fullscreen`，快捷键 F2/F11/F5/F12）。
+
+## 桌面版为什么是"文件夹"而不是单文件 exe
+
+```
+npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe + 依赖 + resources/）
+```
+
+| 形态 | 体积 | 启动到首屏 | 说明 |
+|---|---|---|---|
+| **目录版（默认）** | 585 MB（解压后） | **约 0.3 s** | 直接双击 `win-unpacked/StrongholdProtocol.exe` |
+| 目录版打成 zip | 321 MB | 解压一次后同上 | 用资源管理器右键"压缩到 zip"即可（本机实测 28 s） |
+| 单文件 `--portable` | 261 MB | **约 24 s** | 每次启动都把整包解压到 `%TEMP%`，所以慢 |
+
+分发推荐"目录版 + 手动打 zip"：**下载 321 MB，解压一次，之后每次启动都是 0.3 s**；单文件 exe 虽然只大 60 MB 的差距，但每次启动都要解压 585 MB。打包时顺手把 Electron 的 55 个语言包裁到 `zh-CN` / `en-US`（省约 46 MB）。
 
 ## 选择服务器（exe / apk 首次启动）
 

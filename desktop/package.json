@@ -10,9 +10,9 @@
   "main": "main.mjs",
   "scripts": {
     "start": "electron .",
-    "pack": "electron-builder --win portable --x64"
-  },
-  "devDependencies": {
+    "pack": "electron-builder --win --x64",
+    "pack:portable": "electron-builder --win portable --x64"
+  },  "devDependencies": {
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3"
   },
@@ -21,6 +21,10 @@
     "productName": "StrongholdProtocol",
     "asar": true,
     "npmRebuild": false,
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "directories": {
       "output": "../build/desktop"
     },
@@ -38,7 +42,7 @@
     ],
     "win": {
       "target": [
-        "portable"
+        "dir"
       ],
       "icon": "icon.ico"
     },

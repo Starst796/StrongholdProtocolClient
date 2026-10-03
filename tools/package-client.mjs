@@ -222,7 +222,7 @@ export function pickerSource(name) {
 
 /** CLI arguments shared by package-client / package-desktop / package-android. */
 export function parseCommonArgs(argv) {
-  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, skipInstall: false, help: false };
+  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -233,7 +233,9 @@ export function parseCommonArgs(argv) {
     else if (key === '--out') o.out = val();
     else if (key === '--quiet') o.quiet = true;
     else if (key === '--release') o.release = true;
+    // `--dir` is the desktop default now; still accepted so older command lines keep working.
     else if (key === '--dir') o.dir = true;
+    else if (key === '--portable') o.portable = true;
     else if (key === '--skip-install') o.skipInstall = true;
     else if (key === '-h' || key === '--help') o.help = true;
     else throw new Error(`unknown option ${a}`);

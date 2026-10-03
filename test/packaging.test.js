@@ -19,7 +19,8 @@ import { fileURLToPath } from 'node:url';
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
-import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, PICKER_FILES } from '../tools/package-client.mjs';
+import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, PICKER_FILES, parseCommonArgs } from '../tools/package-client.mjs';
+import { desktopTargets } from '../tools/package-desktop.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -260,4 +261,35 @@ test('the packaged clients default to game.starst.site', () => {
   // ...and the shells ship the same defaults
   assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'mobile', 'capacitor.config.json'), 'utf8')).appId, 'site.starst.stronghold');
   assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build.appId, 'site.starst.stronghold');
+});
+
+describe('desktop packaging layout', () => {
+  test('the default build is the folder, not the self-extracting single file', () => {
+    // The portable exe unpacks the whole app to %TEMP% on every launch (~24 s to the first screen vs ~0.5 s),
+    // so the folder is the default and the single file is opt-in.
+    assert.deepEqual(desktopTargets(), ['dir']);
+    assert.deepEqual(desktopTargets({}), ['dir']);
+  });
+
+  test('--portable is the opt-in for the single self-extracting file', () => {
+    assert.deepEqual(desktopTargets({ portable: true }), ['portable']);
+  });
+
+  test('electron-builder config agrees: folder target, trimmed locales, payload as resources/www', () => {
+    const build = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build;
+    assert.deepEqual(build.win.target, ['dir']);
+    // Electron ships ~48 locales (~48 MB); a Chinese/English game only needs these two.
+    assert.deepEqual(build.electronLanguages, ['zh-CN', 'en-US']);
+    assert.deepEqual(build.extraResources, [{ from: '../build/client/www', to: 'www' }]);
+    assert.equal(build.directories.output, '../build/desktop');
+  });
+
+  test('the packager reads those flags from the command line', () => {
+    const o = parseCommonArgs(['--server', 'x:1', '--portable']);
+    assert.equal(o.server, 'x:1');
+    assert.equal(o.portable, true);
+    assert.equal(parseCommonArgs([]).portable, false);
+    assert.equal(parseCommonArgs(['--dir']).dir, true, '--dir is still accepted (it is the default now)');
+    assert.throws(() => parseCommonArgs(['--nope']), /unknown option/);
+  });
 });
