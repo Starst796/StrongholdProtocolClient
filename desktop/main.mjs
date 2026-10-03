@@ -6,6 +6,10 @@
 // default) — game traffic goes straight to that server, this process only serves the 260 MB of local art/music
 // so entering a match doesn't re-download it.
 //
+// The loopback server always binds DEFAULT_PORT (serve.mjs): the page's origin — and with it the localStorage
+// the game keeps its identity token, loadout and settings in — must be the same on every launch. Binding an
+// ephemeral port instead made every restart look like a fresh install (see serve.mjs).
+//
 //   StrongholdProtocol.exe [--server <address>] [--fullscreen] [--choose-server]
 //
 // `--server` overrides the built-in address for this run (LAN play without a rebuild) by appending ?server=…
@@ -17,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
-import { createStaticServer } from './serve.mjs';
+import { createStaticServer, DEFAULT_PORT } from './serve.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Payload root: resources/www in a packaged app, build/client/www when running from the repo (`npm run client:desktop:dev`). */
@@ -101,7 +105,10 @@ async function main() {
     return;
   }
 
-  const served = await createStaticServer({ root: WWW, log: console });
+  // A pinned port (not `0`) keeps `http://127.0.0.1:<port>` — the page's origin — identical across launches.
+  // Chromium scopes localStorage by origin, so this is what lets the identity token, the loadout, settings and
+  // the picker's saved server survive a restart; an OS-assigned port would silently discard all of it.
+  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, log: console });
   const query = serverOverride
     ? `?server=${encodeURIComponent(serverOverride)}`
     : (chooseServer ? '?pick=1' : '');

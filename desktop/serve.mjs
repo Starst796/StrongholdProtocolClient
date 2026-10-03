@@ -53,6 +53,16 @@ export const MIME = Object.freeze({
   '.ttf': 'font/ttf',
 });
 
+/**
+ * Loopback port the desktop shell asks for. Chromium scopes localStorage (and the shell's own `sp.shell.*`
+ * server choice) by *origin*, so the old `port: 0` — a fresh OS-assigned port every launch — meant every run
+ * wrote to a different `http://127.0.0.1:<port>` and read back nothing: identity token, loadout, settings and
+ * the remembered server were "lost" on every restart. A pinned port keeps the origin (and therefore the data).
+ */
+export const DEFAULT_PORT = 47821;
+/** Consecutive ports tried when the preferred one is taken. The order is fixed, so the origin stays put anyway. */
+export const PORT_SEARCH = 16;
+
 /** First path segments under www/ that are content-addressed enough to cache for a day (server/index.js LONG_CACHE_DIRS). */
 const LONG_CACHE_DIRS = new Set(['assets', 'fonts', 'vendor']);
 const LONG_CACHE = 'public, max-age=86400';
@@ -97,6 +107,11 @@ export function parseRange(header, size) {
 
 /**
  * Start the loopback static server.
+ *
+ * `port > 0` is preferred and, if it is busy, the next PORT_SEARCH consecutive ports are tried before giving up
+ * and letting the OS pick one (`port: 0`). The caller keeps the resulting origin stable by passing a fixed port
+ * (see DEFAULT_PORT) — persistence in the page depends on it.
+ *
  * @param {{ root: string, host?: string, port?: number, log?: { warn?: Function, error?: Function } }} opts
  * @returns {Promise<{ url: string, port: number, server: http.Server, close: () => Promise<void> }>}
  */
@@ -175,19 +190,40 @@ export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = c
     });
   });
 
-  return new Promise((resolve, reject) => {
-    const onError = (e) => reject(e);
+  const candidates = port > 0
+    ? [...Array.from({ length: PORT_SEARCH }, (_, i) => port + i).filter((p) => p <= 65535), 0]
+    : [0];
+
+  const listen = (p) => new Promise((resolve, reject) => {
+    const onError = (e) => { server.off('listening', onListening); reject(e); };
+    const onListening = () => { server.off('error', onError); resolve(); };
     server.once('error', onError);
-    server.listen(port, host, () => {
-      server.off('error', onError);
-      server.on('error', (e) => log.error?.('[client] server error', e));
-      const actual = server.address().port;
-      resolve({
-        url: `http://${host}:${actual}`,
-        port: actual,
-        server,
-        close: () => new Promise((done) => { server.close(() => done()); server.closeAllConnections?.(); }),
-      });
-    });
+    server.once('listening', onListening);
+    server.listen(p, host);
   });
+
+  return (async () => {
+    let failure = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const p = candidates[i];
+      try {
+        await listen(p);
+        failure = null;
+        break;
+      } catch (e) {
+        failure = e;
+        if (e?.code !== 'EADDRINUSE') throw e;
+        if (candidates[i + 1] > 0) log.warn?.(`[client] loopback port ${p} is in use — trying ${candidates[i + 1]}`);
+      }
+    }
+    if (failure) throw failure;
+    server.on('error', (e) => log.error?.('[client] server error', e));
+    const actual = server.address().port;
+    return {
+      url: `http://${host}:${actual}`,
+      port: actual,
+      server,
+      close: () => new Promise((done) => { server.close(() => done()); server.closeAllConnections?.(); }),
+    };
+  })();
 }

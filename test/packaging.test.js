@@ -11,6 +11,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -325,5 +326,88 @@ describe('desktop packaging layout', () => {
     assert.equal(parseCommonArgs([]).portable, false);
     assert.equal(parseCommonArgs(['--dir']).dir, true, '--dir is still accepted (it is the default now)');
     assert.throws(() => parseCommonArgs(['--nope']), /unknown option/);
+  });
+});
+
+describe('desktop shell: a stable loopback origin keeps localStorage', () => {
+  // Chromium scopes localStorage/sessionStorage by origin. The shell serves the payload over http://127.0.0.1:<port>,
+  // so an OS-assigned port every launch (the old `port: 0`) is a different origin every time — the game's identity
+  // token (sp.tokens), loadout (sp.pref.loadout), settings and the picker's saved server all read back empty, i.e.
+  // "restarting loses the loadout / login". Binding a pinned port is the whole fix; these tests keep it pinned.
+  const HTML = '<!doctype html><title>t</title>';
+
+  /** Bind an http server to a free port low enough that PORT_SEARCH ports above it also exist. */
+  async function occupyPortAbove(port) {
+    for (let p = port; p <= 65535 - 32; p++) {
+      const s = http.createServer();
+      try {
+        await new Promise((resolve, reject) => { s.once('error', reject); s.listen(p, '127.0.0.1', resolve); });
+        return { server: s, port: p };
+      } catch { s.close(); }
+    }
+    return null;
+  }
+
+  test('serve.mjs pins a concrete port and exports the fallback width', async () => {
+    const { DEFAULT_PORT, PORT_SEARCH } = await import('../desktop/serve.mjs');
+    assert.ok(Number.isInteger(DEFAULT_PORT) && DEFAULT_PORT > 1023 && DEFAULT_PORT < 65536, 'a concrete, non-privileged port');
+    assert.ok(Number.isInteger(PORT_SEARCH) && PORT_SEARCH > 1);
+  });
+
+  test('the desktop window is pointed at that stable origin (never an ephemeral port)', () => {
+    const src = readFileSync(path.join(ROOT, 'desktop', 'main.mjs'), 'utf8');
+    assert.match(src, /import \{[^}]*DEFAULT_PORT[^}]*\} from '\.\/serve\.mjs'/, 'main.mjs must use the pinned port');
+    assert.match(src, /createStaticServer\(\{[^}]*port:\s*DEFAULT_PORT/, 'the static server must be given the pinned port');
+  });
+
+  test('a busy port falls through to the next free one (deterministically) instead of failing', async () => {
+    const { createStaticServer, PORT_SEARCH } = await import('../desktop/serve.mjs');
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-serve-'));
+    writeFileSync(path.join(root, 'index.html'), HTML);
+    const blocker = await occupyPortAbove(50000);
+    if (!blocker) return; // no free port to occupy: nothing to assert on this machine
+    let served;
+    try {
+      served = await createStaticServer({ root, port: blocker.port, log: { warn() {}, error() {} } });
+      assert.notEqual(served.port, blocker.port, 'the busy port is skipped');
+      assert.ok(served.port > blocker.port && served.port <= blocker.port + PORT_SEARCH, `landed on ${served.port}, searched from ${blocker.port}`);
+      assert.equal(served.url, `http://127.0.0.1:${served.port}`, 'the origin is the loopback host + chosen port');
+      // and the payload is actually served from that origin (200 + body)
+      const got = await new Promise((resolve, reject) => {
+        http.get(`${served.url}/index.html`, (r) => {
+          let d = '';
+          r.on('data', (c) => { d += c; });
+          r.on('end', () => resolve({ status: r.statusCode, body: d }));
+        }).on('error', reject);
+      });
+      assert.equal(got.status, 200);
+      assert.match(got.body, /<title>t<\/title>/);
+    } finally {
+      await served?.close();
+      await new Promise((resolve) => blocker.server.close(resolve));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('two launches land on the same origin, so the next run sees the localStorage the last one wrote', async () => {
+    const { createStaticServer } = await import('../desktop/serve.mjs');
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-serve-'));
+    writeFileSync(path.join(root, 'index.html'), HTML);
+    const blocker = await occupyPortAbove(50000);
+    if (!blocker) return;
+    try {
+      const first = await createStaticServer({ root, port: blocker.port, log: { warn() {}, error() {} } });
+      const firstUrl = first.url;
+      await first.close();
+      const second = await createStaticServer({ root, port: blocker.port, log: { warn() {}, error() {} } });
+      try {
+        assert.equal(second.url, firstUrl, 'the origin must be identical on the next launch (Chromium keys storage by origin)');
+      } finally {
+        await second.close();
+      }
+    } finally {
+      await new Promise((resolve) => blocker.server.close(resolve));
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

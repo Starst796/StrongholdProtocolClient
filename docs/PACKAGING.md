@@ -53,7 +53,7 @@ node tools/package-client.mjs --game D:\gits\Stronghold-Protocol --out D:\client
 | 文件 | 说明 |
 |---|---|
 | `desktop/main.mjs` | Electron 主进程：起本地静态服务、开窗口、外链走系统浏览器、F2（选择服务器）/ F11 / F5 / F12 快捷键、`--choose-server` |
-| `desktop/serve.mjs` | 只监听 `127.0.0.1` 的静态服务（MIME 表与游戏仓库 `server/index.js` 一致，由 `test/packaging.test.js` 锁定） |
+| `desktop/serve.mjs` | 只监听 `127.0.0.1` 的静态服务，默认端口 `DEFAULT_PORT`（47821，见 §4.4）；MIME 表与游戏仓库 `server/index.js` 一致，由 `test/packaging.test.js` 锁定 |
 | `desktop/package.json` | electron / electron-builder 与打包配置（`extraResources` 把 `build/client/www` 放进 `resources/www`；`electronLanguages` 只保留 `zh-CN`/`en-US`） |
 | `desktop/icon.ico` | 应用图标（取自客户端自带的盾牌图标） |
 
@@ -107,6 +107,19 @@ C:\Users\<你>\AppData\Roaming\StrongholdProtocol\client.log
 | 页面无响应（`unresponsive`） | 记录日志 |
 
 > 排查 "打开某个界面就闪退"：先看 `client.log` 里有没有 `renderer gone: reason=…`。有 → 是渲染进程崩了（现在会自动恢复，原因也记下来了）；没有 → 是整个进程被别的东西结束了（例如**已有实例在跑**：单实例锁会让新启动的进程直接退出，`client.log` 里会有 `another instance was launched`）。
+
+### 4.4 本地缓存（重启后不丢干员调配 / 登录 / 设置）
+
+游戏把身份续连 token（`sp.tokens`）、干员调配（`sp.pref.loadout`）、设置（`sp.pref.settings`）等存在浏览器 `localStorage` 里，而 **`localStorage` 是按"源"（origin）隔离的**。壳把 payload 挂在 `http://127.0.0.1:<port>` 上，所以端口必须每次启动都一样：
+
+| | 端口 | 源 | 重启后 |
+|---|---|---|---|
+| 以前 | `0`（系统每次随机分配） | `http://127.0.0.1:53471` → 下次 `http://127.0.0.1:58203` | 换了源 → 读回空值，看起来像"重装了一遍"：要重新登录、干员调配和设置都没了 |
+| 现在 | `DEFAULT_PORT` = 47821（固定） | 每次都是 `http://127.0.0.1:47821` | 同一个源 → `localStorage` 原样读回 |
+
+47821 被占用时按 `47821, 47822, …` **固定顺序**往后找（`serve.mjs` 的 `PORT_SEARCH`），顺序固定意味着下一次启动仍落在同一个端口，源依旧不变；只有这一小段端口全被占满才会退回随机端口（`client.log` 会有 `loopback port … is in use` 提示）。
+
+Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供页面（`mobile/capacitor.config.json` 的 `androidScheme: https`），源本来就是稳定的，`localStorage` 随应用数据一起保留。
 
 ## 5. Android 版（apk）
 
@@ -235,6 +248,7 @@ node scripts/notice.mjs --clear        # 撤回
 | 报 `hunk … does not match` / 补丁没改到文件 | 上游改了 `public/index.html`、`js/net.js` 或 `js/screens/room.js`：按新源码重新生成 `patches/game-client.patch`，再跑一次 |
 | 选择服务器页里全部"无法连接" | 地址写错、服务器没开、或防火墙拦了 `/ws`；本机测试用 `npm start` 起游戏仓库（默认 3000），页面上的 `localhost:3000` 会变绿 |
 | 选择页每次启动都出现 / 想换服务器 | 桌面按 **F2**（或 `--choose-server`），取消勾选"记住并直接进入"；Android 每次都会问 |
+| 重启后要重新登录 / 干员调配、设置被清空 | 旧版本客户端每次启动都换随机端口（换了源，`localStorage` 读不回来）：重新 `npm run client:desktop` 生成固定 `DEFAULT_PORT`（47821）的客户端，见 §4.4 |
 | Android 上局域网地址连不上 | 先确认 APK 是打开 `allowMixedContent` 打的（§5）；地址用 `192.168.x.x:3000` 这种形式，手机与服务器要在同一个 Wi-Fi |
 | 报 `DATA_SHIM_JS changed upstream` / `SIM_PRIVATE is now […]` | 游戏仓库那两处变了：同步 `tools/game-contract.mjs` |
 | 打包后的客户端里图片 / 音频 404 | 游戏仓库的 `public/assets` 不完整：在那边 `npm run assets` |
