@@ -1,6 +1,6 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有两条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**多人游戏**仍走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器；官方远程服已下线）。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有两条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**多人游戏**仍走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
@@ -90,13 +90,13 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 - `MainActivity.java`：`setDecorFitsSystemWindows(false)` + 隐藏 system bars（`BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`，划一下仍能临时唤出）
 - `AndroidManifest.xml`：`screenOrientation="sensorLandscape"`（游戏本来就是横屏设计，自带"请横屏"提示）
 
-**2. 准备阶段场景过小** —— 视口比例问题。游戏用根字号缩放整个 HUD：`clamp(40px, min(100vw/19.2, 100vh/10.8), 240px)`。横屏手机只有 ~366 px 高，`100vh/10.8 ≈ 33.9` 被 **40 px 下限**抬上去，于是 HUD 相对屏幕比桌面高 ~15%，而准备阶段的镜头要"避开 HUD"（`js/ui/fieldHost.js hudBands` → `js/render/projection.js clearHud`），只能把准备场景缩小。自动战斗的镜头没有这个约束，所以你看到"战斗正常、准备阶段小"。
+**2. 准备阶段场景过小** —— 视口比例问题。游戏用根字号缩放整个 HUD：`clamp(40px, min(100vw/19.2, 100vh/10.8), 240px)`。横屏手机只有 ~366 px 高，`100vh/10.8 ≈ 33.9` 被 **40 px 下限**抬上去，于是 HUD 相对屏幕比桌面高 ~15%，而准备阶段的镜头要"避开 HUD"（`js/ui/fieldHost.js hudBands` → `js/render/projection.js clearHud`），只能把准备场景缩小。自动战斗的镜头没有这个约束，所以看到"战斗正常、准备阶段小"。
 
 `shell/display.css` 在横屏矮屏（`orientation: landscape and max-height: 480px`）用同一个公式但**去掉 40 px 下限**，HUD 与棋盘回到桌面的比例：同一个页面上（`dev/game-mock.html?phase=PREP`，每个备战格的屏幕像素，桌面基准 122 px）：
 
 | 视口 | rem | 备战格 px（改前 → 改后） |
 |---|---|---|
-| 756×366（你那台的可用区） | 40 → 33.9 | 35 → **41.5**（+19%） |
+| 756×366（受测设备） | 40 → 33.9 | 35 → **41.5**（+19%） |
 | 798×366 + 41 px 刘海 | 40 → 33.9 | 35 → **41.5**（+19%） |
 | 800×360 | 40 → 33.3 | 33.8 → **40.8**（+21%） |
 | 915×412 | 40 → 38.1 | 44.5 → 46.7（+5%） |
