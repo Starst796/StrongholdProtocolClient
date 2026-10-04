@@ -11,6 +11,8 @@ npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目�
 npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（约 192 MB）
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
 npm test                    # 打包流程的单元/契约测试（无游戏 checkout 时相关用例自动跳过）
+npm run patch:regen         # 上游更新后重新生成 patches/game-client.patch
+npm run patch:check         # 只检查补丁是否与当前 checkout 同步（不写入）
 ```
 
 详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**。
@@ -48,7 +50,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 
 - **游戏仓库只读**：`git status` 永远干净，`git pull` 不会因为打包而冲突。客户端的改动是补丁：
   `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）。
-- 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。此时重新生成 `patches/game-client.patch` 即可。
+- 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。补丁**不要手改**：客户端改动以「锚定字符串替换」写在 [tools/regen-patch.mjs](tools/regen-patch.mjs)（大段替换体在 [tools/patch-hooks/](tools/patch-hooks/)），跑 `npm run patch:regen` 重新生成即可；[npm test](test/packaging.test.js) 里有一条契约用例会在补丁过期时报错（`patch:check` 同义，可接 CI）。锚点若被上游改写，regen 会明确报出是哪个锚点没找到。
 - `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照 `server/index.js` 校验。
 - 产物里记录构建来源：payload 的 `build.json` 与 `build/client/manifest.json` 都有 `git describe` + commit + `PROTOCOL_VERSION`。
 

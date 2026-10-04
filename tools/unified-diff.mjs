@@ -6,7 +6,8 @@
 // changes, no "\ No newline at end of file" markers (test/packaging.test.js pins those assumptions).
 //
 // A hunk that matches nowhere throws: when upstream edits a patched file the build fails loudly instead of shipping
-// a client that connects to the wrong server.
+// a client that connects to the wrong server. Regenerate the patch with `node tools/regen-patch.mjs` (the hooks are
+// anchored string replacements there, so an upstream edit is a one-command fix rather than hand-patching hunks).
 
 import fs from 'node:fs';
 import path from 'node:path';

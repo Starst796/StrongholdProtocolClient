@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
+import { buildPatch, applyHooks } from '../tools/regen-patch.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, OFFLINE_FILES, assertServerNeedsOnlyShims, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
 
@@ -169,6 +170,21 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
     const pairs = [...block[1].matchAll(/'([^']+)':\s*'([^']+)'/g)].map((m) => [m[1], m[2]]);
     assert.ok(pairs.length > 20, `MIME 表只解析出 ${pairs.length} 条，解析可能失效`);
     assert.deepEqual({ ...MIME }, Object.fromEntries(pairs));
+  });
+
+  test('patches/game-client.patch is in sync with the hooks (regenerate with tools/regen-patch.mjs)', () => {
+    // buildPatch() re-derives the patch from the checkout's current files, so a stale committed patch (upstream
+    // bumped room.js and the recorded context rotted) fails here in `npm test`, not only at packaging time.
+    const committed = readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8');
+    assert.equal(committed, buildPatch(GAME_ROOT), 'run `node tools/regen-patch.mjs` and commit the result');
+    assert.ok(!/\r/.test(committed), 'the patch is LF-only');
+  });
+
+  test('the hooks are anchored string replacements (no full-file copy)', () => {
+    const src = {};
+    for (const f of PATCHED_FILES) src[f] = readFileSync(path.join(GAME_ROOT, 'public', f), 'utf8');
+    const out = applyHooks(src);
+    for (const f of PATCHED_FILES) assert.notEqual(out[f], src[f], `${f} must be changed by the hooks`);
   });
 
   test('the payload patch still applies to this checkout (upstream drift fails the build)', () => {

@@ -1,6 +1,6 @@
 {
   "name": "stronghold-protocol-client",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "卫戍协议：盟约 · 端侧客户端打包（Windows .exe / Android .apk）：把游戏静态资源摊平成一个 payload，默认连接 game.starst.site",
   "license": "GPL-3.0-or-later",
@@ -11,6 +11,8 @@
   "scripts": {
     "test": "node --test",
     "client:build": "node tools/package-client.mjs",
+    "patch:regen": "node tools/regen-patch.mjs",
+    "patch:check": "node tools/regen-patch.mjs --check",
     "client:desktop": "node tools/package-desktop.mjs",
     "client:android": "node tools/package-android.mjs",
     "release": "node tools/package-release.mjs",

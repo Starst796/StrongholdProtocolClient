@@ -69,7 +69,13 @@ export function buildDesktop(o = {}) {
 
   const targets = desktopTargets(o);
   console.log(`package-desktop: 构建 ${targets.join(' + ')}（服务器 ${built.server}，游戏 ${built.game.describe || built.game.app}）…`);
-  run(process.execPath, [builder, '--win', targets[0], '--x64'], DESKTOP);
+  const args = [builder, '--win', targets[0], '--x64'];
+  // Package with the Electron that `npm install` already put in desktop/node_modules instead of letting
+  // electron-builder fetch the release zip (and SHASUMS) from GitHub on every build: that download fails on an
+  // offline / firewalled machine (ETIMEDOUT) even though electron is installed, and it is unnecessary when the
+  // dist is right there. Missing dist (a skipped binary download) keeps the normal download path.
+  if (fs.existsSync(electronDist)) args.push(`--config.electronDist=${electronDist}`);
+  run(process.execPath, args, DESKTOP);
 
   const out = path.join(CLIENT_ROOT, 'build', 'desktop');
   const artifacts = [];

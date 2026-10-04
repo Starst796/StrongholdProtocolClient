@@ -12,7 +12,8 @@
 //
 // It is a normal `git diff` against the game's public/ tree, so it is applied with `-p2` (payload root ↔ public/).
 // The patch target is the payload copy — the game checkout is never touched. When upstream edits one of those files
-// the patch stops applying and the build fails (see tools/unified-diff.mjs).
+// the patch stops applying and the build fails (see tools/unified-diff.mjs); regenerate it from the hooks with
+// `node tools/regen-patch.mjs` instead of hand-editing the patch.
 
 import fs from 'node:fs';
 import path from 'node:path';
