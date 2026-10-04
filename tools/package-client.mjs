@@ -17,7 +17,7 @@
 // The game checkout is never modified: the source-level hooks a packaged client needs live in
 // patches/game-client.patch and are applied to the payload copy (tools/payload-patches.mjs).
 //
-//   node tools/package-client.mjs [--server game.starst.site] [--game <checkout>] [--out <dir>] [--quiet]
+//   node tools/package-client.mjs [--server localhost:3000] [--game <checkout>] [--out <dir>] [--quiet]
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +27,7 @@ import { DATA_SHIM_JS, GAME_MOUNTS, SIM_PRIVATE, findGameRoot, readAppVersion, r
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
 
 export const CLIENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const DEFAULT_SERVER = 'game.starst.site';
+export const DEFAULT_SERVER = 'localhost:3000';
 export const DEFAULT_OUT = path.join(CLIENT_ROOT, 'build', 'client', 'www');
 export const CONFIG_FILE = path.join(CLIENT_ROOT, 'client.config.json');
 /** Served when the optional local-client art was never extracted (mirrors server/index.js EMPTY_LOCAL_ART). */

@@ -3,7 +3,7 @@
 //
 //   node tools/package-desktop.mjs [--server <addr>] [--game <checkout>] [--portable] [--skip-install]
 //
-//   --server <addr>   game server the client connects to (default: client.config.json / game.starst.site)
+//   --server <addr>   game server the client connects to (default: client.config.json / localhost:3000)
 //   --game <dir>      Stronghold-Protocol checkout (default: SP_GAME_ROOT / client.config.json / ../Stronghold-Protocol)
 //   --portable        single-file portable .exe instead of the folder (it unpacks the whole app to %TEMP% on
 //                     *every* launch: ~24 s to the first screen versus ~0.5 s for the folder)

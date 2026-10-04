@@ -8,8 +8,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER,
-  addressError, autostartOn, customFrom, isAndroidUA, shouldShowPicker,
+  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
+  addressError, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
 } from '../shell/picker-core.js';
 
 describe('when the picker is shown', () => {
@@ -19,23 +19,23 @@ describe('when the picker is shown', () => {
   });
 
   test('desktop remembers and does not ask again', () => {
-    assert.equal(shouldShowPicker({ forced: false, chosenThisSession: false, savedAddress: 'game.starst.site', autostart: true }), false);
+    assert.equal(shouldShowPicker({ forced: false, chosenThisSession: false, savedAddress: 'localhost:3000', autostart: true }), false);
   });
 
   test('Android (autostart off) always asks — it is the only way to switch servers there', () => {
-    assert.equal(shouldShowPicker({ forced: false, chosenThisSession: false, savedAddress: 'game.starst.site', autostart: false }), true);
+    assert.equal(shouldShowPicker({ forced: false, chosenThisSession: false, savedAddress: 'localhost:3000', autostart: false }), true);
   });
 
   test('--choose-server / F2 forces it, even with something remembered', () => {
-    assert.equal(shouldShowPicker({ forced: true, chosenThisSession: false, savedAddress: 'game.starst.site', autostart: true }), true);
+    assert.equal(shouldShowPicker({ forced: true, chosenThisSession: false, savedAddress: 'localhost:3000', autostart: true }), true);
   });
 
   test('a choice in this session wins: the reload after picking must not ask again (no loop)', () => {
-    const base = { forced: false, savedAddress: 'game.starst.site' };
+    const base = { forced: false, savedAddress: 'localhost:3000' };
     assert.equal(shouldShowPicker({ ...base, chosenThisSession: true, autostart: true }), false);
     assert.equal(shouldShowPicker({ ...base, chosenThisSession: true, autostart: false }), false);
     // ...including a forced launch: --choose-server asks once per launch, not once per reload
-    assert.equal(shouldShowPicker({ forced: true, chosenThisSession: true, savedAddress: 'game.starst.site', autostart: false }), false);
+    assert.equal(shouldShowPicker({ forced: true, chosenThisSession: true, savedAddress: 'localhost:3000', autostart: false }), false);
   });
 
   test('autostart defaults: on for desktop, off for Android, explicit value wins', () => {
@@ -70,18 +70,38 @@ describe('server addresses', () => {
     assert.match(addressError(':3000'), /主机名/);
   });
 
-  test('the built-in entries are the official server and a local one, in that order', () => {
-    assert.deepEqual(BUILTIN_SERVERS.map((s) => s.address), ['game.starst.site', 'localhost:3000']);
-    assert.equal(BUILTIN_SERVERS[0].label, '官方服务器');
+  test('the only built-in entry is the local server the player runs themselves', () => {
+    assert.deepEqual(BUILTIN_SERVERS.map((s) => s.address), ['localhost:3000']);
+    assert.equal(BUILTIN_SERVERS[0].label, '本机 / 局域网');
   });
 
-  test('the stored custom list is JSON and survives garbage', () => {
-    assert.deepEqual(customFrom('["a:1","b:2"]'), ['a:1', 'b:2']);
+  test('the stored custom list is JSON ({name, address}) and survives garbage', () => {
+    assert.deepEqual(customFrom('[{"name":"家","address":"a:1"},{"name":"","address":"b:2"}]'), [
+      { name: '家', address: 'a:1' }, { name: '', address: 'b:2' },
+    ]);
+    assert.deepEqual(customFrom('["a:1","b:2"]'), [
+      { name: '', address: 'a:1' }, { name: '', address: 'b:2' },
+    ], 'the pre-name (array of strings) shape still loads');
     assert.deepEqual(customFrom(''), []);
     assert.deepEqual(customFrom(null), []);
     assert.deepEqual(customFrom('not json'), []);
     assert.deepEqual(customFrom('{"a":1}'), [], 'not an array');
-    assert.deepEqual(customFrom('["ok", 7, null, " "]'), ['ok'], 'only non-empty strings');
+    assert.deepEqual(customFrom('["ok", 7, null, " ", {"address":"c:3"}, {"name":"x"}]'), [
+      { name: '', address: 'ok' }, { name: '', address: 'c:3' },
+    ], 'only usable entries survive');
+  });
+
+  test('a saved server shows its name, falling back to the address when the name is blank', () => {
+    assert.equal(serverName({ name: '家', address: 'a:1' }), '家');
+    assert.equal(serverName({ name: '   ', address: 'a:1' }), 'a:1');
+    assert.equal(serverName({ address: 'a:1' }), 'a:1');
+    assert.equal(serverName(null), '');
+  });
+
+  test('the typed name is trimmed and capped to NAME_MAX', () => {
+    assert.equal(cleanName('  我的服务器  '), '我的服务器');
+    assert.equal(cleanName(undefined), '');
+    assert.equal(cleanName('x'.repeat(NAME_MAX + 10)).length, NAME_MAX);
   });
 
   test('storage keys are namespaced under sp.shell.* so they never collide with the game"s own keys', () => {

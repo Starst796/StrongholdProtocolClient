@@ -1,9 +1,9 @@
 // Builds the Android client (.apk): assemble the payload from a game checkout, sync the Capacitor project, then run
 // the Gradle wrapper. See docs/PACKAGING.md.
 //
-//   node tools/package-android.mjs [--server game.starst.site] [--game <checkout>] [--release] [--skip-install]
+//   node tools/package-android.mjs [--server localhost:3000] [--game <checkout>] [--release] [--skip-install]
 //
-//   --server <addr>   game server the client connects to (default: client.config.json / game.starst.site)
+//   --server <addr>   game server the client connects to (default: client.config.json / localhost:3000)
 //   --game <dir>      Stronghold-Protocol checkout (default: SP_GAME_ROOT / client.config.json / ../Stronghold-Protocol)
 //   --release         build a release APK (unsigned → it still needs `apksigner`, see docs/PACKAGING.md)
 //   --skip-install    do not run `npm install` in mobile/ even when the Capacitor CLI is missing
@@ -43,7 +43,7 @@ function sdkDir() {
 
 /**
  * The browser client reaches a LAN server over plain ws:// when the packaged address has no TLS, so the app allows
- * cleartext (default: wss to game.starst.site). `cap add android` regenerates the manifest, hence this re-patch.
+ * cleartext (default: ws to a local/LAN server). `cap add android` regenerates the manifest, hence this re-patch.
  */
 function ensureCleartext() {
   const src = fs.readFileSync(MANIFEST, 'utf8');

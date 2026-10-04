@@ -1,4 +1,4 @@
 {
   "gameRoot": "../Stronghold-Protocol",
-  "defaultServer": "game.starst.site"
+  "defaultServer": "localhost:3000"
 }

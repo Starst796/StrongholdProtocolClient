@@ -22,7 +22,7 @@ index 82a085e..360d735 100644
    <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
    <script>
 diff --git a/public/js/net.js b/public/js/net.js
-index ce2d362..79bec8f 100644
+index ce2d362..bc266e5 100644
 --- a/public/js/net.js
 +++ b/public/js/net.js
 @@ -1,6 +1,8 @@
@@ -31,7 +31,7 @@ index ce2d362..79bec8f 100644
 -// - One socket at ws(s)://<host>/ws, JSON text frames `{ t, ...payload }`.
 +// - One socket at ws(s)://<host>/ws, JSON text frames `{ t, ...payload }`. The host is the page's own origin
 +//   unless the client is packaged (Electron / Android): `/js/runtime-config.js` then sets `globalThis.__SP_SERVER__`
-+//   to the remote game server (default `game.starst.site`), and `?server=host` overrides it for one session.
++//   to the game server it was built for (default `localhost:3000`), and `?server=host` overrides it for one session.
  // - Auto-reconnect with exponential backoff + jitter; a heartbeat (`ping`) measures latency and
  //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
  //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
@@ -110,11 +110,11 @@ index ce2d362..79bec8f 100644
    return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
  }
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index 97a108b..894f580 100644
+index 60c3de9..62d5fce 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
-@@ -15,7 +15,7 @@ import {
- import { toast, toastError } from '../ui/toasts.js';
+@@ -16,7 +16,7 @@ import { toast, toastError } from '../ui/toasts.js';
+ import { copyText } from '../ui/clipboard.js';
  import { GuideButton } from '../ui/guide.js';
  import { LoadoutButton } from './loadout.js';
 -import { net } from '../net.js';
@@ -122,7 +122,7 @@ index 97a108b..894f580 100644
  import { store, useStore, shallowEqual, emptyMatch } from '../store.js';
  import { difficultyInfo } from './lobby.js';
  
-@@ -60,10 +60,11 @@ export function roomFacts(room, myId) {
+@@ -61,10 +61,11 @@ export function roomFacts(room, myId) {
    };
  }
  

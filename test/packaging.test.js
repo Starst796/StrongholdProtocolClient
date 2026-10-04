@@ -258,10 +258,10 @@ describe('client payload assembly', () => {
   });
 });
 
-test('the packaged clients default to game.starst.site', () => {
-  assert.equal(DEFAULT_SERVER, 'game.starst.site');
-  assert.match(runtimeConfigSource(DEFAULT_SERVER), /globalThis\.__SP_SERVER__ = "game\.starst\.site";/);
-  // client.config.json points at the sibling checkout and the official server
+test('the packaged clients default to a server the player runs locally', () => {
+  assert.equal(DEFAULT_SERVER, 'localhost:3000');
+  assert.match(runtimeConfigSource(DEFAULT_SERVER), /globalThis\.__SP_SERVER__ = "localhost:3000";/);
+  // client.config.json points at the sibling checkout and the local server
   const config = JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'client.config.json'), 'utf8'));
   assert.equal(config.gameRoot, '../Stronghold-Protocol');
   assert.equal(config.defaultServer, DEFAULT_SERVER);

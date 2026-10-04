@@ -1,11 +1,12 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor），默认连接 **`game.starst.site`**：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走远程服务器。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器；官方远程服已下线）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
 
 ```
+npm run release             # 一键发布：对齐上游版本号 → 跑测试 → 打 exe(+zip) 与 apk → git 提交（入口 package.bat / package.sh）
 npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB，双击即开）
 npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（约 192 MB）
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
@@ -34,11 +35,12 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/package-client.mjs` | 把游戏仓库的挂载点摊平成 `build/client/www`，生成 `data.js` / `js/runtime-config.js` / `js/shell/*` / `css/shell-display.css` / `build.json`，并应用 payload 补丁 |
 | `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
-| `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk，见下），`git diff` 生成 || `shell/picker.js`、`shell/picker-core.js` | 端侧"选择服务器"页（进游戏前覆盖启动画面）：探测服务器、记住上次选择、自定义地址；`picker-core.js` 是纯逻辑（可单测） |
+| `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk，见下），`git diff` 生成 || `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 多人游戏"，多人页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
 | `client.config.json` | `gameRoot`、`defaultServer` |
+| `tools/package-release.mjs` | 一键发布驱动：读上游 `APP_VERSION` → 对齐本仓库版本号 → 跑测试 → 打桌面 + APK → 复制到 `build/dist/` → `git commit`（入口 `package.bat` / `package.sh`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §13） |
 | `tools/server-status.mjs` | 查服务器忙不忙（`/healthz`）：单次采样、滚动观察、`--under N` 等空窗（见 §11） |
 | `test/packaging.test.js`、`test/picker.test.js` | 补丁/契约/摊平/增量的测试；选择页规则的测试 |
 
@@ -100,11 +102,13 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 
 同一套测量还确认：所有视口下备战格/临时格/后排仍然 **100 % 不被 HUD 遮挡**（这正是当初 `clearHud` 缩小的原因），页面无报错。
 
-## 选择服务器（exe / apk 首次启动）
+## 选择游戏模式 / 服务器（exe / apk 首次启动）
 
-端侧客户端不绑定死一台服务器：payload 里多了一个"选择服务器"页（`shell/picker.js`），在进游戏前盖住启动画面。
+端侧客户端进游戏前有一个 Minecraft 风格的菜单（`shell/picker.js`），盖住启动画面：
 
-- **列出的服务器**：`官方服务器 game.starst.site`（`--server` 打包时指定的地址会显示为"默认"）、`本机 / 局域网 localhost:3000`，以及自己添加的地址（`host`、`host:port`、`http(s)://…`、`ws(s)://…` 都能识别，存在客户端本地）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
+- **主页**：上下两个选项——**单人游戏**（预留：游戏的大厅 / 房间 / 模拟都在服务端，还没有"纯前端单机"的实现，点了只给提示）、**多人游戏**。
+- **多人游戏页**：服务器列表 + **添加服务器**（填名称与地址）、**直接连接**（只填地址，连上后不进列表）与"返回"。
+- **列出的服务器**：内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包时指定的地址会作为"默认服务器"列出；再加上自己添加的服务器（存在客户端本地，旧的"只存地址"格式会自动升级成"名称 + 地址"）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
 - **记住上次选择**：桌面端勾上"记住并直接进入"后，下次启动直接进游戏（想换服务器按 **F2**，或用 `--choose-server` 启动）。Android 没有 F2，所以每次都显示这个页面（默认不记住），免得换了服务器回不去。
 - **网页版不受影响**：浏览器版没有这个页面，服务器永远是自己所在的站点。
 - **重启后不丢本地缓存**：身份 token、干员调配、设置都存在 `localStorage` 里，而它是按"源"隔离的——所以桌面壳固定用 `127.0.0.1:47821`（`desktop/serve.mjs` 的 `DEFAULT_PORT`），每次启动都是同一个源，重启后原样读回（以前每次随机端口 = 每次换源，等于重装）。Android 本来就从固定的 `https://localhost` 提供页面，无需处理。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.4。

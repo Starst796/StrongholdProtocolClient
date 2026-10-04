@@ -1,6 +1,6 @@
 # 打包客户端（exe / apk）
 
-把浏览器客户端和本机素材打进**桌面 / Android 可执行文件**：素材和代码从本地读取，房间、回合、联机仍然连远程服务器——默认 **`game.starst.site`**。
+把浏览器客户端和本机素材打进**桌面 / Android 可执行文件**：素材和代码从本地读取，房间、回合、联机仍然连服务器——默认 **`localhost:3000`**（自己在本机 / 局域网跑游戏服务器；官方远程服已下线）。
 
 ```
 npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB）
@@ -46,7 +46,7 @@ node tools/package-client.mjs --game D:\gits\Stronghold-Protocol --out D:\client
 
 `--game` 指定游戏仓库 checkout（也可以设环境变量 `SP_GAME_ROOT`，或改 `client.config.json` 的 `gameRoot`）。
 
-网页版也可以临时改服务器：`https://game.starst.site/?server=192.168.1.9:3000`（只对本次会话生效）。
+网页版也可以临时改服务器：`https://<你的站点>/?server=192.168.1.9:3000`（只对本次会话生效）。
 
 ## 4. 桌面版
 
@@ -188,18 +188,20 @@ $env:JAVA_HOME = "C:\Program Files\Java\jdk-21"
 
 macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` / `commandlinetools-linux`，SDK 默认在 `~/Library/Android/sdk` / `~/Android/Sdk`。`tools/package-android.mjs` 会自己找 `ANDROID_HOME` / `ANDROID_SDK_ROOT` / 默认目录，并写 `mobile/android/local.properties`。
 
-## 6. 选择服务器（进游戏前）
-打包客户端里多了一个**选择服务器页**（`shell/picker.js` + `shell/picker-core.js`，被复制成 payload 里的 `/js/shell/*`），它在 `/js/main.js` 之前执行、盖住启动画面，把选择写进 `localStorage`（`sp.shell.*`）后重载页面。`js/net.js` 只认 `globalThis.__SP_SERVER__`，选择页只是给它赋值，所以不需要再改游戏源码。
+## 6. 选择游戏模式 / 服务器（进游戏前）
+打包客户端里多了一个 Minecraft 风格的菜单（`shell/picker.js` + `shell/picker-core.js`，被复制成 payload 里的 `/js/shell/*`），它在 `/js/main.js` 之前执行、盖住启动画面，把选择写进 `localStorage`（`sp.shell.*`）后重载页面。`js/net.js` 只认 `globalThis.__SP_SERVER__`，菜单只是给它赋值，所以不需要再改游戏源码。
 
 | 行为 | 说明 |
 |---|---|
-| 列出的服务器 | `官方服务器 game.starst.site`（`--server` 打包指定的地址会标"默认"）、`本机 / 局域网 localhost:3000`，以及玩家自己添加的地址（`host`、`host:port`、`http(s)://…`、`ws(s)://…`，按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地） |
+| 主页 | 上下两个选项：**单人游戏**（预留——大厅 / 房间 / 模拟都在服务端，暂无"纯前端单机"实现，点击只给提示）、**多人游戏** |
+| 多人页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，连上后不保存进列表）、**返回** |
+| 列出的服务器 | 内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包指定的地址会标"默认"；玩家自己添加的服务器（`host`、`host:port`、`http(s)://…`、`ws(s)://…`，按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
 | 探测 | 直接开一条 `/ws` 连接（和游戏同一条通道，因此不依赖服务器 CORS），失败重试一次；绿点 = 真的能连进去。若服务器给 `/healthz` 加了 `Access-Control-Allow-Origin`，还会显示 `v<app> · 在线 n · 房间 n`（不加只是少一行信息，控制台会有一条 CORS 报错，页面已忽略） |
 | 记住上次 | 桌面端勾"记住并直接进入"后下次直接进游戏；想换服务器按 **F2**，或用 `--choose-server` 启动。Android 没有 F2，所以每次都显示、默认不记住（否则玩家换了服务器就回不去了） |
-| 优先级 | `--server <地址>`（本次运行）> `?server=<地址>` > 选择页记住的地址 > 打包默认地址 |
+| 优先级 | `--server <地址>`（本次运行）> `?server=<地址>` > 菜单记住的地址 > 打包默认地址 |
 | 网页版 | 没有这个页面（浏览器版的服务器永远是自己所在的站点） |
 
-改动选择页后跑一遍 `test/picker.test.js`（规则单测）。DOM 那半边没有自动化测试，改动后请手动确认：桌面 `cd desktop && npm start`，Android 装 APK 后首启。
+改动菜单后跑一遍 `test/picker.test.js`（规则单测，含 `customFrom` 的旧格式迁移）。DOM 那半边没有自动化测试，改动后请手动确认：桌面 `cd desktop && npm start`，Android 装 APK 后首启。
 
 ## 7. 服务器公告（`app.notice`）
 
@@ -252,7 +254,7 @@ node scripts/notice.mjs --clear        # 撤回
 | Android 上局域网地址连不上 | 先确认 APK 是打开 `allowMixedContent` 打的（§5）；地址用 `192.168.x.x:3000` 这种形式，手机与服务器要在同一个 Wi-Fi |
 | 报 `DATA_SHIM_JS changed upstream` / `SIM_PRIVATE is now […]` | 游戏仓库那两处变了：同步 `tools/game-contract.mjs` |
 | 打包后的客户端里图片 / 音频 404 | 游戏仓库的 `public/assets` 不完整：在那边 `npm run assets` |
-| 连不上服务器 | 先确认服务器活着：`curl https://game.starst.site/healthz`；再用 `--server 127.0.0.1:3000` 指向本地 `npm start` 排除客户端问题 |
+| 连不上服务器 | 先确认服务器活着：`curl http://localhost:3000/healthz`；再用 `--server 127.0.0.1:3000` 指向本地 `npm start` 排除客户端问题。远程服务器同理，换成对应地址 |
 | 提示「客户端版本与服务器不一致」 | 服务器更新过，重新打包客户端 |
 | APK 报找不到 SDK / JDK | 检查 `ANDROID_HOME`、`JAVA_HOME`、`mobile/android/local.properties`；platform / build-tools 版本要匹配 `mobile/android/variables.gradle`（当前 36） |
 | `sdkmanager` 报 “Package platforms not found” | 分号被 shell 拆开了，改用 `--package_file`（见 §5） |
@@ -312,3 +314,41 @@ npm run server:status -- --json                        # 原始 JSON，喂给别
 
 ## 12. 素材与许可
 打包产物里包含《明日方舟》的美术 / 音频素材，版权归鹰角网络 / Yostar，**不适用**本仓库的 GPL-3.0，仅限个人非商业自用；请勿再分发这些素材或包含它们的整合包（见游戏仓库的 [声明](https://github.com/sganggs/Stronghold-Protocol#声明) 与 [NOTICE.md](https://github.com/sganggs/Stronghold-Protocol/blob/master/NOTICE.md)）。
+
+## 13. 一键发布（`package.bat` / `package.sh`）
+
+上游（`../Stronghold-Protocol`）更新后，**手动跑一次**这个入口，把"对齐版本号 → 测试 → 打包 → 提交"串起来：
+
+```bat
+package.bat                        :: Windows（双击或命令行都行）
+```
+
+```bash
+./package.sh                       # Linux / macOS / Git Bash
+npm run release                    # 等价，前提是 node 在 PATH 上
+```
+
+它按顺序做四件事（实现在 `tools/package-release.mjs`）：
+
+1. 从上游 `shared/constants.js` 读 `APP_VERSION`（顺带 `PROTOCOL_VERSION`）；
+2. 把本仓库的版本字段对齐到它：`package.json`（根 / `desktop/` / `mobile/`）、`desktop/package-lock.json` 与 `mobile/package-lock.json` 的根 + `packages[""]`（只动这两处，npm 传递依赖保持原样）、`mobile/android/app/build.gradle` 的 `versionName` 与 `versionCode`（语义化版本换算：`0.1.2` → `102`）；
+3. 跑 `node --test`，再调 `tools/package-desktop.mjs` 出目录版并压成 `build/dist/StrongholdProtocol-<版本>-win-x64.zip`，接着调 `tools/package-android.mjs` 把 APK 拷成 `build/dist/StrongholdProtocol-<版本>-android-debug.apk`；
+4. 在本仓库 `git add -A` + `git commit`（`build/` 已 gitignore，产物不会进库）。
+
+常用开关：
+
+```bash
+package.bat --server 192.168.1.9:3000     # 把默认服务器换成局域网地址
+package.bat --no-commit                   # 只对齐 + 打包，不提交
+package.bat --skip-android                # 不打 APK
+package.bat --no-zip                      # 只留 win-unpacked 目录，不压缩
+package.bat --no-test --skip-install      # 赶时间
+package.bat --portable                    # 桌面改出单文件便携 exe
+```
+
+说明：
+
+- **不修改游戏仓库**：上游版本只读；补丁 / payload / 壳都在本仓库完成。
+- 上游改了 `public/index.html`、`js/net.js`、`js/screens/room.js` 时补丁会先失败（这是设计好的报警）：按 §9 重新生成 `patches/game-client.patch` 再跑。
+- 缺 JDK 17+ / Android SDK 时脚本**跳过 APK 并继续**（只报一句警告）。本机实测可用 `C:\Program Files\Java\jdk-21` 与 `%LOCALAPPDATA%\Android\Sdk`，脚本会自己找。
+- Windows 下 zip 用系统自带的 `tar -a`（bsdtar）；想要更小就自己用 7-Zip 的 LZMA2（见 §4.1）。
