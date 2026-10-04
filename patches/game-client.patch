@@ -22,7 +22,7 @@ index 82a085e..360d735 100644
    <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
    <script>
 diff --git a/public/js/net.js b/public/js/net.js
-index ce2d362..bc266e5 100644
+index ce2d362..b9afbf8 100644
 --- a/public/js/net.js
 +++ b/public/js/net.js
 @@ -1,6 +1,8 @@
@@ -35,7 +35,7 @@ index ce2d362..bc266e5 100644
  // - Auto-reconnect with exponential backoff + jitter; a heartbeat (`ping`) measures latency and
  //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
  //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
-@@ -92,11 +94,71 @@ export function backoffDelay(attempt, rand = Math.random) {
+@@ -92,11 +94,89 @@ export function backoffDelay(attempt, rand = Math.random) {
  }
  
  /**
@@ -59,7 +59,7 @@ index ce2d362..bc266e5 100644
 +  return typeof injected === 'string' ? injected.trim() : '';
 +}
 +
-+/** Loopback / private addresses (a bare "host:port" for these is plain ws://, not wss://). */
++/** Loopback / private addresses (a bare host name without a port for these is plain ws://, not wss://). */
 +function isLocalAuthority(authority) {
 +  const host = authority.startsWith('[')
 +    ? (authority.slice(1, authority.indexOf(']')) || authority)
@@ -73,10 +73,23 @@ index ce2d362..bc266e5 100644
 +  return a === 0 || a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
 +}
 +
++/** The explicit `:port` of an authority (`''` when it has none); IPv6 authorities keep their brackets. */
++function authorityPort(authority) {
++  const a = String(authority);
++  const end = a.startsWith('[') ? a.indexOf(']') : -1;
++  const host = end === -1 ? a.split(':')[0] : a.slice(0, end + 1);
++  const m = /^:(\d+)$/.exec(a.slice(host.length));
++  return m ? m[1] : '';
++}
++
 +/**
 + * Normalise any server address to a socket URL ending in `/ws`:
 + * `game.starst.site` → `wss://game.starst.site/ws`; `192.168.1.9:3000` → `ws://192.168.1.9:3000/ws`;
 + * `https://x.io` → `wss://x.io/ws`; `ws://x.io:3000/game/ws` keeps its path.
++ *
++ * With no scheme the guess is: an explicit port means a server the player runs themselves (plain `ws://`, except
++ * `:443`), while no port means a hosted site (TLS `wss://`, unless the host is loopback / LAN). The packaged
++ * shell's picker probes the other scheme as well, so a typed `host:port` never needs a hand-written `http://`.
 + * @param {string} raw
 + * @returns {string}
 + */
@@ -88,7 +101,12 @@ index ce2d362..bc266e5 100644
 +  const slash = rest.indexOf('/');
 +  const authority = slash === -1 ? rest : rest.slice(0, slash);
 +  const path = slash === -1 ? '' : rest.slice(slash).replace(/\/+$/, '');
-+  const secure = scheme ? scheme === 'wss' || scheme === 'https' : !isLocalAuthority(authority);
++  const port = authorityPort(authority);
++  const secure = scheme
++    ? scheme === 'wss' || scheme === 'https'
++    : port
++      ? port === '443'
++      : !isLocalAuthority(authority);
 +  const pathPart = path && path !== '/' ? path : '';
 +  return `${secure ? 'wss' : 'ws'}://${authority}${/\/ws$/.test(pathPart) ? pathPart : `${pathPart}/ws`}`;
 +}

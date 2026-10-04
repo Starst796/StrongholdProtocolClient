@@ -22,7 +22,7 @@
 import { toHttpUrl, toWsUrl } from '../net.js';
 import {
   BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -93,10 +93,30 @@ export function serverList() {
 }
 
 /**
+ * Socket URLs to try for a typed address, best guess first. A scheme-less `host:port` is the one case the player
+ * cannot be expected to get right — a self-hosted server on a public IP wants plain `ws://`, a TLS reverse proxy
+ * on an odd port wants `wss://` — so the second candidate is the other scheme.
+ * @param {string} address
+ * @returns {string[]}
+ */
+export function candidateWsUrls(address) {
+  const raw = String(address ?? '').trim();
+  if (!raw) return [];
+  const first = toWsUrl(raw);
+  if (!ambiguousScheme(raw)) return [first];
+  const alt = first.startsWith('wss:') ? `ws:${first.slice(4)}` : `wss:${first.slice(3)}`;
+  return [first, alt];
+}
+
+/** The web (http) URL of an already-normalised socket URL. */
+const httpUrlOf = (wsUrl) => wsUrl.replace(/^ws/, 'http').replace(/\/ws$/, '');
+
+/**
  * One attempt: opens /ws (no CORS involved) and reads /healthz when the server allows it.
+ * @param {string} wsUrl an address already normalised by candidateWsUrls
  * @returns {Promise<{ ok: boolean, ms: number, info?: object }>}
  */
-function probeOnce(address, timeoutMs) {
+function probeOnce(wsUrl, timeoutMs) {
   return new Promise((resolve) => {
     const started = Date.now();
     let socket = null;
@@ -117,7 +137,7 @@ function probeOnce(address, timeoutMs) {
 
     // Best effort, never blocking: /healthz usually has no CORS headers, and that is the server's business
     // (the browser logs a console error for it, the picker ignores the rejection).
-    fetch(`${toHttpUrl(address)}/healthz`, { cache: 'no-store' })
+    fetch(`${httpUrlOf(wsUrl)}/healthz`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((json) => {
         info = json;
@@ -126,7 +146,7 @@ function probeOnce(address, timeoutMs) {
       .catch(() => { /* no CORS or no route: the socket result decides */ });
 
     try {
-      socket = new WebSocket(toWsUrl(address));
+      socket = new WebSocket(wsUrl);
     } catch {
       finish(false);
       return;
@@ -139,18 +159,22 @@ function probeOnce(address, timeoutMs) {
 
 /**
  * Is `address` a live game server? Checks the channel the game itself will use, so a green row means the player
- * can actually get in. A failed attempt is retried once: a slow handshake must not turn into a misleading
- * "无法连接".
+ * can actually get in. The first candidate gets a second attempt (a slow handshake must not turn into a misleading
+ * "无法连接"); the other-scheme candidate gets one, so a hopeless address still fails reasonably fast.
  * @param {string} address
  * @param {number} [timeoutMs] per attempt
  * @param {number} [attempts]
- * @returns {Promise<{ ok: boolean, ms: number, info?: object }>}
+ * @returns {Promise<{ ok: boolean, ms: number, info?: object, url?: string }>} `url` is the socket URL that worked
  */
 export async function probe(address, timeoutMs = PROBE_TIMEOUT_MS, attempts = 2) {
   let result = { ok: false, ms: 0 };
-  for (let i = 0; i < Math.max(1, attempts); i++) {
-    result = await probeOnce(address, timeoutMs);
-    if (result.ok) return result;
+  const candidates = candidateWsUrls(address);
+  for (let c = 0; c < candidates.length; c++) {
+    const tries = c === 0 ? Math.max(1, attempts) : 1;
+    for (let i = 0; i < tries; i++) {
+      result = await probeOnce(candidates[c], timeoutMs);
+      if (result.ok) return { ...result, url: candidates[c] };
+    }
   }
   return result;
 }
@@ -176,7 +200,7 @@ const CSS = `
 .sp-pick__state{font-size:12px;color:#7d8a86;margin-left:auto;text-align:right;white-space:nowrap}
 .sp-pick__del{color:#7d8a86;background:none;border:0;font-size:16px;cursor:pointer;padding:0 4px}
 .sp-pick__del:hover{color:#e0635f}
-.sp-pick__row{display:flex;gap:8px}
+.sp-pick__row{display:flex;gap:8px;flex-wrap:wrap}
 .sp-pick__in{flex:1 1 auto;min-width:0;padding:11px 12px;border-radius:8px;border:1px solid #26302d;background:#0f1413;
   color:#e8f1ee;font-size:14px;font-family:inherit}
 .sp-pick__in:focus{outline:0;border-color:#4ed8af}
@@ -200,6 +224,27 @@ const CSS = `
 .sp-pick__field>label{flex:0 0 56px;font-size:12px;color:#7d8a86}
 .sp-pick__formrow{display:flex;gap:8px;justify-content:flex-end}
 .sp-pick__btn.is-go{border-color:#2f6f5c;color:#d8f5ec}
+.sp-pick__headbtns{display:flex;gap:8px}
+.sp-pick__note{font-size:11px;color:#5f6b67;line-height:1.5}
+@media (max-height:520px),(max-width:560px){
+  .sp-pick{padding:10px;align-items:flex-start}
+  .sp-pick__box{gap:10px}
+  .sp-pick__title{font-size:16px}
+  .sp-pick__sub{font-size:10px;margin-top:2px}
+  .sp-pick__menu{gap:8px}
+  .sp-pick__mode{padding:12px 14px;border-radius:10px;gap:3px}
+  .sp-pick__mode-name{font-size:16px}
+  .sp-pick__mode-note{font-size:10px}
+  .sp-pick__list{gap:6px}
+  .sp-pick__card{min-height:42px;padding:8px 10px;gap:8px;border-radius:8px}
+  .sp-pick__name{font-size:13px}
+  .sp-pick__addr,.sp-pick__state,.sp-pick__opt,.sp-pick__hint,.sp-pick__note{font-size:11px}
+  .sp-pick__in{padding:8px 10px;font-size:12px}
+  .sp-pick__btn{padding:8px 11px;font-size:12px}
+  .sp-pick__go{padding:10px;font-size:14px}
+  .sp-pick__form{padding:10px;gap:6px;border-radius:8px}
+  .sp-pick__field>label{flex:0 0 40px;font-size:11px}
+}
 `;
 
 /** Render the picker into the page. */
@@ -213,11 +258,15 @@ function mount() {
 
   const saved = readItem(K_SERVER, 'localStorage');
   let screen = 'home';   // 'home' (mode menu) | 'multi' (server list)
-  let form = null;       // null | 'add' (name + address) | 'direct' (address only)
+  let form = null;       // null | 'add' | 'edit' (name + address) | 'direct' (address only)
+  let editingKey = null; // form === 'edit': the stored server being edited (its normalised key)
   let hintText = '';
   let list = [];
   let selected = null;
   const states = new Map();
+
+  /** The stored entry behind a key, when it is a user-added (editable) server. */
+  const customEntryOf = (key) => customServers().find((e) => toWsUrl(e.address) === key) || null;
 
   /** The remembered/"go straight in" checkbox — Android has no F2, so it never gets one. */
   const autoRow = isAndroid()
@@ -250,13 +299,17 @@ function mount() {
           <div class="sp-pick__title">多人游戏</div>
           <div class="sp-pick__sub">STRONGHOLD PROTOCOL · MULTIPLAYER</div>
         </div>
-        <button class="sp-pick__btn" id="sp-back">返回</button>
+        <div class="sp-pick__headbtns">
+          <button class="sp-pick__btn" id="sp-refresh" title="重新测试各服务器延迟">刷新</button>
+          <button class="sp-pick__btn" id="sp-back">返回</button>
+        </div>
       </div>
       <div class="sp-pick__list" id="sp-list"></div>
       <div id="sp-form"></div>
       <div class="sp-pick__row">
         <button class="sp-pick__btn" id="sp-add">添加服务器</button>
         <button class="sp-pick__btn" id="sp-direct">直接连接</button>
+        <button class="sp-pick__btn" id="sp-edit" title="编辑选中的自建服务器">编辑</button>
       </div>
       ${autoRow}
       <button class="sp-pick__go" id="sp-go">进 入 游 戏</button>
@@ -274,10 +327,11 @@ function mount() {
     const listEl = root.querySelector('#sp-list');
     if (!listEl) return;
     const goEl = root.querySelector('#sp-go');
+    const editEl = root.querySelector('#sp-edit');
     listEl.innerHTML = '';
     for (const s of list) {
       const st = states.get(s.key) || {};
-      const custom = customServers().some((e) => toWsUrl(e.address) === s.key);
+      const custom = customEntryOf(s.key) != null;
       const state = st.pending ? '检测中…' : st.ok ? `可连接 · ${st.ms}ms` : st.failed ? '无法连接' : '';
       const info = st.info
         ? [st.info.app ? `v${st.info.app}` : '', st.info.humans != null ? `在线 ${st.info.humans}` : '', st.info.rooms != null ? `房间 ${st.info.rooms}` : '']
@@ -305,16 +359,26 @@ function mount() {
       listEl.appendChild(card);
     }
     if (goEl) goEl.disabled = !selected;
+    // Only a user-added server can be edited (the built-in and the packaged default are fixed).
+    if (editEl) editEl.disabled = form !== null || !customEntryOf(selected);
   }
 
   function refresh(entry) {
     states.set(entry.key, { pending: true });
     renderList();
     probe(entry.address).then((r) => {
-      states.set(entry.key, { ok: r.ok, ms: r.ms, info: r.info, failed: !r.ok });
+      states.set(entry.key, { ok: r.ok, ms: r.ms, info: r.info, failed: !r.ok, url: r.url });
       renderList();
       if (!r.ok && entry.key === selected) setHint(`连不上 ${entry.http} —— 确认服务器已启动，或换一个地址。`);
     });
+  }
+
+  /** 刷新: re-probe every listed server (the rows show 检测中… until each answers). */
+  function refreshAll() {
+    setHint('正在重新测试各服务器延迟…');
+    states.clear();
+    renderList();
+    for (const s of list) refresh(s);
   }
 
   function loadList(keepKey) {
@@ -331,9 +395,12 @@ function mount() {
 
   /** Remember the choice and (re)boot into it — the only writer of sp.shell.*. */
   function connected(entry) {
-    const key = keyOf(entry?.address);
+    // Prefer the URL that actually answered the probe: a typed `host:port` may only be reachable on one scheme.
+    const st = entry?.key ? states.get(entry.key) : null;
+    const address = (st?.ok && st.url) ? st.url : entry?.address;
+    const key = keyOf(address);
     if (!key) return;
-    writeItem(K_SERVER, entry.address, 'localStorage');
+    writeItem(K_SERVER, address, 'localStorage');
     const autoEl = root.querySelector('#sp-auto');
     if (autoEl) writeItem(K_AUTOSTART, autoEl.checked ? '1' : '0', 'localStorage');
     writeItem(K_CHOSEN, '1', 'sessionStorage');
@@ -342,7 +409,7 @@ function mount() {
       hidePicker();
       return;
     }
-    globalThis.__SP_SERVER__ = entry.address;
+    globalThis.__SP_SERVER__ = address;
     globalThis.location.reload();
   }
 
@@ -351,48 +418,63 @@ function mount() {
     if (entry) connected(entry);
   }
 
-  /** The add-server / direct-connect form under the list (Minecraft's two fields vs. one). */
+  const ADDR_HINT = 'host、host:port、http(s)://…、ws(s)://…';
+  const ADDR_NOTE = '<div class="sp-pick__note">不写协议也能用：带端口的地址按 ws:// 与 wss:// 各试一次，公网域名默认 wss://。</div>';
+
+  /** The add / edit / direct-connect form under the list (two fields for a saved server, one for a quick connect). */
   function renderForm() {
     const host = root.querySelector('#sp-form');
     if (!host) return;
     host.innerHTML = '';
-    if (!form) return;
+    if (!form) { renderList(); return; }
+    const editing = form === 'edit' ? customEntryOf(editingKey) : null;
     const wrap = document.createElement('div');
     wrap.className = 'sp-pick__form';
-    wrap.innerHTML = form === 'add'
-      ? `<div class="sp-pick__field"><label for="sp-name">名称</label>
+    wrap.innerHTML = form === 'direct'
+      ? `<div class="sp-pick__field"><label for="sp-addr">地址</label>
+           <input class="sp-pick__in" id="sp-addr" placeholder="${ADDR_HINT}" spellcheck="false"></div>
+         ${ADDR_NOTE}
+         <div class="sp-pick__formrow">
+           <button class="sp-pick__btn" id="sp-cancel">取消</button>
+           <button class="sp-pick__btn is-go" id="sp-ok">连接</button></div>`
+      : `<div class="sp-pick__field"><label for="sp-name">名称</label>
            <input class="sp-pick__in" id="sp-name" maxlength="${NAME_MAX}" placeholder="我的服务器" spellcheck="false"></div>
          <div class="sp-pick__field"><label for="sp-addr">地址</label>
-           <input class="sp-pick__in" id="sp-addr" placeholder="host、host:port、http(s)://…、ws(s)://…" spellcheck="false"></div>
+           <input class="sp-pick__in" id="sp-addr" placeholder="${ADDR_HINT}" spellcheck="false"></div>
+         ${ADDR_NOTE}
          <div class="sp-pick__formrow">
            <button class="sp-pick__btn" id="sp-cancel">取消</button>
-           <button class="sp-pick__btn is-go" id="sp-ok">完成</button></div>`
-      : `<div class="sp-pick__field"><label for="sp-addr">地址</label>
-           <input class="sp-pick__in" id="sp-addr" placeholder="host、host:port、http(s)://…、ws(s)://…" spellcheck="false"></div>
-         <div class="sp-pick__formrow">
-           <button class="sp-pick__btn" id="sp-cancel">取消</button>
-           <button class="sp-pick__btn is-go" id="sp-ok">连接</button></div>`;
+           <button class="sp-pick__btn is-go" id="sp-ok">${form === 'edit' ? '保存' : '完成'}</button></div>`;
     host.appendChild(wrap);
 
     const nameEl = wrap.querySelector('#sp-name');
     const addrEl = wrap.querySelector('#sp-addr');
-    wrap.querySelector('#sp-cancel').addEventListener('click', () => { form = null; setHint(''); renderForm(); });
+    if (editing) {
+      if (nameEl) nameEl.value = editing.name || '';
+      addrEl.value = editing.address;
+    }
+    const close = () => { form = null; editingKey = null; setHint(''); renderForm(); };
+    wrap.querySelector('#sp-cancel').addEventListener('click', close);
     wrap.querySelector('#sp-ok').addEventListener('click', () => {
       const raw = addrEl.value.trim();
       const bad = addressError(raw);
       if (bad) { setHint(bad); return; }
       if (form === 'direct') { connected({ address: raw }); return; }
       const key = toWsUrl(raw);
-      const rest = customServers().filter((e) => toWsUrl(e.address) !== key);
+      // An edit replaces the old entry: drop both the previous key and any entry the new address collides with.
+      const drop = form === 'edit' ? new Set([editingKey, key]) : new Set([key]);
+      const rest = customServers().filter((e) => !drop.has(toWsUrl(e.address)));
       rest.unshift({ name: cleanName(nameEl.value), address: raw });
       writeItem(K_LIST, JSON.stringify(rest), 'localStorage');
       form = null;
+      editingKey = null;
       setHint('');
       renderForm();
       loadList(key);
     });
     addrEl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') wrap.querySelector('#sp-ok').click(); });
     (nameEl || addrEl).focus();
+    renderList();
   }
 
   /** Build the current screen's skeleton and wire it up. */
@@ -402,14 +484,21 @@ function mount() {
       root.querySelector('#sp-solo').addEventListener('click', () => setHint('单人模式还没做：游戏的大厅 / 房间 / 模拟都在服务端，暂时不能脱离服务器运行，敬请期待。'));
       root.querySelector('#sp-multi').addEventListener('click', () => { screen = 'multi'; form = null; setHint(''); layout(); loadList(); });
     } else {
-      root.querySelector('#sp-back').addEventListener('click', () => { screen = 'home'; form = null; setHint(''); layout(); });
-      root.querySelector('#sp-add').addEventListener('click', () => { form = form === 'add' ? null : 'add'; setHint(''); renderForm(); });
-      root.querySelector('#sp-direct').addEventListener('click', () => { form = form === 'direct' ? null : 'direct'; setHint(''); renderForm(); });
+      root.querySelector('#sp-back').addEventListener('click', () => { screen = 'home'; form = null; editingKey = null; setHint(''); layout(); });
+      root.querySelector('#sp-refresh').addEventListener('click', refreshAll);
+      root.querySelector('#sp-add').addEventListener('click', () => { const on = form !== 'add'; form = on ? 'add' : null; editingKey = null; setHint(''); renderForm(); });
+      root.querySelector('#sp-direct').addEventListener('click', () => { const on = form !== 'direct'; form = on ? 'direct' : null; editingKey = null; setHint(''); renderForm(); });
+      root.querySelector('#sp-edit').addEventListener('click', () => {
+        if (!customEntryOf(selected)) return;
+        form = 'edit';
+        editingKey = selected;
+        setHint('');
+        renderForm();
+      });
       root.querySelector('#sp-go').addEventListener('click', enterGame);
       const autoEl = root.querySelector('#sp-auto');
       if (autoEl) autoEl.checked = readItem(K_AUTOSTART, 'localStorage') !== '0';
       renderForm();
-      renderList();
     }
     const hintEl = root.querySelector('#sp-hint');
     if (hintEl) hintEl.textContent = hintText;
@@ -418,7 +507,7 @@ function mount() {
   // Esc: close the form, then step back to the mode menu.
   root.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
-    if (form) { form = null; setHint(''); renderForm(); }
+    if (form) { form = null; editingKey = null; setHint(''); renderForm(); }
     else if (screen === 'multi') { screen = 'home'; setHint(''); layout(); }
   });
 
@@ -460,6 +549,7 @@ globalThis.__SP_SHELL_PICKER__ = {
   hide: hidePicker,
   visible: pickerVisible,
   servers: serverList,
+  candidates: candidateWsUrls,
   probe,
 };
 

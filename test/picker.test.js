@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import {
   BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
 } from '../shell/picker-core.js';
 
 describe('when the picker is shown', () => {
@@ -102,6 +102,15 @@ describe('server addresses', () => {
     assert.equal(cleanName('  我的服务器  '), '我的服务器');
     assert.equal(cleanName(undefined), '');
     assert.equal(cleanName('x'.repeat(NAME_MAX + 10)).length, NAME_MAX);
+  });
+
+  test('a scheme-less host:port is the ambiguous case the picker probes both ways', () => {
+    for (const both of ['192.168.1.9:3000', '1.2.3.4:3000', 'example.com:8443', '[::1]:3000', 'localhost:3000', 'host:3000/path']) {
+      assert.equal(ambiguousScheme(both), true, `${both} should try ws:// and wss://`);
+    }
+    for (const one of ['http://example.com:8443', 'wss://x.io', 'ws://x.io:3000', 'https://x.io', 'example.com', 'localhost', '', '   ']) {
+      assert.equal(ambiguousScheme(one), false, `${one} needs no second attempt`);
+    }
   });
 
   test('storage keys are namespaced under sp.shell.* so they never collide with the game"s own keys', () => {

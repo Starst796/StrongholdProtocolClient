@@ -159,6 +159,9 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 版本号改了产物名却没变 / 反之 | 版本要从**游戏仓库** `shared/constants.js` 读；本仓库 `package.json`+两份 lock 的根与 `packages.""` 也要同步（`1ca6d71`），别碰传递依赖里的 `0.1.0` |
 | 脚本在 Windows 上好好的，Linux/systemd 上炸 | CRLF：仓库用 `.gitattributes`（`*.sh`/`*.mjs`/`deploy/**` = `eol=lf`）；`git archive` 会按 `core.autocrlf` 输出 CRLF；装到服务器/`/etc/systemd/system` 的副本要 `sed -i 's/\r$//'` |
 | 只有个别尺寸（手机横屏）出问题 | 改 UI 比例前先用 `dev/game-mock.html?phase=<阶段>` 在**多个视口**下量，桌面 1920×1080 必须回归不变 |
+| 服务器填 `IP:端口` 连不上、非得写 `http://` | 曾经不带协议的地址一律"非私网 → wss"，公网 IP 就废了。现在 `toWsUrl()`：**带端口的地址按 `ws://` 猜**（`:443` 除外）、不带端口才按"公网 wss / 本机 ws"；选择页还会对"无协议 + 有端口"的地址**两种协议都探一次**（`picker-core.js` 的 `ambiguousScheme`），命中即记录那个地址。实测 `211.71.60.138:3000` → `ws://…` 一次连上 |
+| 内网穿透（frp）连不上 | 两种典型原因都不在客户端：明文端口回 **501**（frps 的 http 代理没开/不支持 ws upgrade），TLS 端口用**自签证书** → Chromium 直接 `ERR_CERT_AUTHORITY_INVALID`。要么给穿透端口配受信任证书，要么用支持 WebSocket 的 frp 代理类型 |
+| 域名带路径（`host/play/`）连不上 | 选择页把路径原样接到 `/ws` 前（`host/play/` → `wss://host/play/ws`），路径不存在就是 404。注意游戏服务端的 `/ws` **只应答带 `Upgrade` 的请求**：普通 GET 返回 404 是正常的，用 `curl -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="` 才能看到 101 |
 | `Number(null) === 0` | 可选数字别随手 `Number()`：`null` 必须保持"没有"，否则"未设置"会被当成 0（公告的 `until` 就栽过） |
 
 ## 7. 交付

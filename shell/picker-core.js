@@ -81,6 +81,19 @@ export function cleanName(raw) {
 }
 
 /**
+ * Is the ws/wss guess for this typed address genuinely ambiguous? A scheme-less address with an explicit port is
+ * the case the player cannot be expected to get right (a self-hosted server on a public IP wants plain `ws://`,
+ * a TLS reverse proxy on an odd port wants `wss://`), so the picker probes both. Addresses that already carry a
+ * scheme, and bare host names with no port, are decided by the normalisation alone.
+ * @param {string} raw
+ */
+export function ambiguousScheme(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s || /^(wss?|https?):\/\//i.test(s)) return false;
+  return /^(?:\[[^\]]*\]|[^/?#:]+):\d+(?:[/?#]|$)/.test(s);
+}
+
+/**
  * Light validation of a typed address: optional scheme + host[:port] + optional path, nothing else. Normalisation
  * (ws/wss, default path) is public/js/net.js's toWsUrl; this only rejects things that are obviously not an address.
  * @returns {string|null} an error message, or null when the address looks usable
