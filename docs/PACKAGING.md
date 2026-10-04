@@ -18,7 +18,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 
 所以：进对局不用再下载约 260 MB 素材，但服务器地址、协议版本仍然跟着远程服务器走。
 
-> 客户端和服务端的协议版本必须一致（游戏仓库 `shared/constants.js` 的 `PROTOCOL_VERSION`）。服务器升级后请重新打包，否则客户端会提示「客户端版本与服务器不一致」。
+> 客户端和服务端的协议版本必须一致（游戏仓库 `shared/constants.js` 的 `PROTOCOL_VERSION`）。**选择服务器页会先探测每台服务器的协议版本**：这个探测发一个 `version: 0` 的 `hello`，必然落在服务器 `server/net.js` 的版本闸门上，回 `error.detail = "version mismatch: server N"`——**读到 N 的同时不会创建会话**。协议一致的服务器照常；不一致的标记「协议不兼容」并**拒绝进入**。若绕过选择页（记住并直接进入）后服务器已降级，则在实际握手时客户端会提示「客户端版本与服务器不一致，请刷新页面」。
 
 ## 2. 先决条件
 

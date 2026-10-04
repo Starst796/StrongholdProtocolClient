@@ -105,6 +105,28 @@ export function parseRange(header, size) {
   return [start, Math.min(end, size - 1)];
 }
 
+/** Reserved same-origin path the page calls to reach a remote server's /healthz (see createStaticServer's `proxy`). */
+export const HEALTHZ_PROXY_PATH = '/__sp/healthz';
+/** Give up on a remote /healthz that does not answer in time. */
+const HEALTHZ_PROXY_TIMEOUT_MS = 4000;
+
+/**
+ * Resolve a `/__sp/healthz?url=<http(s)://host/healthz>` request to the remote URL to fetch, or null when it is not
+ * an allowed target. Only this game's status endpoint is relayed, so the route is never an open proxy.
+ * @param {string} rawUrl
+ * @returns {string|null}
+ */
+export function healthzProxyTarget(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl ?? ''), 'http://127.0.0.1'); } catch { return null; }
+  if (u.pathname !== HEALTHZ_PROXY_PATH) return null;
+  let t;
+  try { t = new URL(u.searchParams.get('url') || ''); } catch { return null; }
+  if (t.protocol !== 'http:' && t.protocol !== 'https:') return null;
+  if (!/\/healthz\/?$/.test(t.pathname)) return null;
+  return t.toString();
+}
+
 /**
  * Start the loopback static server.
  *
@@ -112,10 +134,10 @@ export function parseRange(header, size) {
  * and letting the OS pick one (`port: 0`). The caller keeps the resulting origin stable by passing a fixed port
  * (see DEFAULT_PORT) — persistence in the page depends on it.
  *
- * @param {{ root: string, host?: string, port?: number, log?: { warn?: Function, error?: Function } }} opts
+ * @param {{ root: string, host?: string, port?: number, proxy?: boolean, log?: { warn?: Function, error?: Function } }} opts
  * @returns {Promise<{ url: string, port: number, server: http.Server, close: () => Promise<void> }>}
  */
-export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = console } = {}) {
+export function createStaticServer({ root, host = '127.0.0.1', port = 0, proxy = false, log = console } = {}) {
   const rootAbs = path.resolve(root);
 
   const finish = (req, res, status, headers, body) => {
@@ -123,7 +145,29 @@ export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = c
     res.end(req.method === 'HEAD' ? undefined : body);
   };
 
+  /**
+   * Relay a remote server's /healthz same-origin. The game server sends no CORS headers, so the page cannot read
+   * that body itself; the Electron main process can (Node has no origin), which is exactly what this route exposes.
+   */
+  async function proxyHealthz(req, res) {
+    const target = healthzProxyTarget(req.url);
+    const json = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+    if (!target) { finish(req, res, 400, json, '{"ok":false}'); return; }
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => { try { ctrl?.abort(); } catch { /* ignore */ } }, HEALTHZ_PROXY_TIMEOUT_MS);
+    try {
+      const r = await fetch(target, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+      finish(req, res, r.status, json, await r.text());
+    } catch (e) {
+      log.warn?.('[client] /healthz proxy failed', target, e?.message || e);
+      finish(req, res, 502, json, '{"ok":false}');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function handle(req, res) {
+    if (proxy && healthzProxyTarget(req.url)) { await proxyHealthz(req, res); return; }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD');
       finish(req, res, 405, { 'Content-Type': 'text/plain; charset=utf-8' }, 'method not allowed');

@@ -20,12 +20,18 @@
 //     best-effort /healthz fetch enriches the row whenever the server does allow it.
 
 import { toHttpUrl, toWsUrl } from '../net.js';
+// The game's own release + wire numbers, straight from the shared constants the payload ships next to the picker
+// (this file is copied as /js/shell/picker.js, so ../../shared/constants.js is the payload's /shared/constants.js).
+import { APP_VERSION, PROTOCOL_VERSION } from '../../shared/constants.js';
 import {
   BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_MODE, K_SERVER, NAME_MAX,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
+  PROBE_HELLO, addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA,
+  parseProbeReply, serverName, shouldShowPicker, versionLabel, versionMismatchHint, versionVerdict,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
+/** How long a reply to PROBE_HELLO (or /healthz) may take after the socket opens before the row settles without it. */
+const PROBE_REPLY_TIMEOUT_MS = 1200;
 const isAndroid = () => isAndroidUA(globalThis.navigator?.userAgent);
 
 /**
@@ -119,39 +125,78 @@ export function candidateWsUrls(address) {
 /** The web (http) URL of an already-normalised socket URL. */
 const httpUrlOf = (wsUrl) => wsUrl.replace(/^ws/, 'http').replace(/\/ws$/, '');
 
+/** Is this page served by the desktop shell's loopback server (the origin that offers the /__sp/healthz proxy)? */
+const isLoopbackOrigin = () => /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/.test(String(globalThis.location?.origin ?? ''));
+
 /**
- * One attempt: opens /ws (no CORS involved) and reads /healthz when the server allows it.
+ * Best-effort `/healthz` read for a picked server: its release/protocol numbers and live counters. It usually
+ * cannot be read cross-origin (the game server sends no CORS headers), so the shells bridge it:
+ *   * Android (Capacitor): `Capacitor.nativePromise` runs the request natively — no page origin, no CORS;
+ *   * desktop: the loopback shell proxies it same-origin at /__sp/healthz (desktop/serve.mjs);
+ *   * a CORS-enabled server, or the game's own origin, answers the plain fetch.
+ * @param {string} httpBase web URL of the server (no trailing slash)
+ * @returns {Promise<object|undefined>} the /healthz body when it really is this game's, else undefined
+ */
+async function fetchHealthzInfo(httpBase) {
+  const url = `${httpBase}/healthz`;
+  const cap = globalThis.Capacitor;
+  if (cap && typeof cap.nativePromise === 'function') {
+    try {
+      const res = await cap.nativePromise('CapacitorHttp', 'request', { url, method: 'GET', headers: {} });
+      const body = typeof res?.data === 'string' ? JSON.parse(res.data) : res?.data;
+      if (body && body.ok === true) return body;
+    } catch { /* fall through to the other channels */ }
+  }
+  if (isLoopbackOrigin()) {
+    try {
+      const r = await fetch(`/__sp/healthz?url=${encodeURIComponent(url)}`, { cache: 'no-store' });
+      if (r.ok) { const body = await r.json(); if (body && body.ok === true) return body; }
+    } catch { /* no proxy in a web build — the direct fetch below is the only chance */ }
+  }
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    if (r.ok) { const body = await r.json(); if (body && body.ok === true) return body; }
+  } catch { /* no CORS: the socket probe still decides reachability */ }
+  return undefined;
+}
+
+/**
+ * One attempt: opens /ws (no CORS involved), asks the server its wire version with PROBE_HELLO, and reads /healthz
+ * through whatever channel this shell has. Reachability is the socket opening; the version and /healthz are
+ * enrichments that must never hold a row back, so the attempt always resolves within `timeoutMs`.
  * @param {string} wsUrl an address already normalised by candidateWsUrls
- * @returns {Promise<{ ok: boolean, ms: number, info?: object }>}
+ * @returns {Promise<{ ok: boolean, ms: number, protocol: number|null, info?: object }>}
  */
 function probeOnce(wsUrl, timeoutMs) {
   return new Promise((resolve) => {
     const started = Date.now();
     let socket = null;
-    let timer = null;
     let opened = false;
     let settled = false;
+    let protocol = null;
     let info;
+    let replyDone = false;
+    let healthzDone = false;
 
     const finish = (ok) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimeout(deadline);
       try { socket?.close(); } catch { /* already closed */ }
-      resolve({ ok, ms: Date.now() - started, info });
+      resolve({ ok, ms: Date.now() - started, protocol, info });
     };
+    // Resolve once the socket is up AND the reply + /healthz have each answered (or run out their grace).
+    const settle = () => { if (opened && replyDone && healthzDone) finish(true); };
 
-    timer = setTimeout(() => finish(false), timeoutMs);
+    const deadline = setTimeout(() => {
+      replyDone = true;
+      healthzDone = true;
+      if (opened) finish(true); else finish(false);
+    }, timeoutMs);
 
-    // Best effort, never blocking: /healthz usually has no CORS headers, and that is the server's business
-    // (the browser logs a console error for it, the picker ignores the rejection).
-    fetch(`${httpUrlOf(wsUrl)}/healthz`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((json) => {
-        info = json;
-        if (opened) finish(true);
-      })
-      .catch(() => { /* no CORS or no route: the socket result decides */ });
+    // /healthz is best effort: its rejection (no CORS) or slowness never decides reachability.
+    fetchHealthzInfo(httpUrlOf(wsUrl)).then((j) => { info = j; healthzDone = true; settle(); });
+    setTimeout(() => { healthzDone = true; settle(); }, PROBE_REPLY_TIMEOUT_MS);
 
     try {
       // NativeWebSocket, never globalThis.WebSocket: in single-player that is the in-page loopback (see above).
@@ -160,9 +205,19 @@ function probeOnce(wsUrl, timeoutMs) {
       finish(false);
       return;
     }
-    socket.onopen = () => { opened = true; finish(true); };
+    socket.onopen = () => {
+      opened = true;
+      try { socket.send(JSON.stringify(PROBE_HELLO)); } catch { /* ignore */ }
+      setTimeout(() => { replyDone = true; settle(); }, PROBE_REPLY_TIMEOUT_MS);
+    };
+    socket.onmessage = (ev) => {
+      if (!opened) return;
+      try { protocol = parseProbeReply(JSON.parse(typeof ev.data === 'string' ? ev.data : '')); } catch { protocol = null; }
+      replyDone = true;
+      settle();
+    };
     socket.onerror = () => { if (!opened) finish(false); };
-    socket.onclose = () => { if (!opened) finish(false); };
+    socket.onclose = () => { if (!opened) finish(false); else { replyDone = true; settle(); } };
   });
 }
 
@@ -173,7 +228,7 @@ function probeOnce(wsUrl, timeoutMs) {
  * @param {string} address
  * @param {number} [timeoutMs] per attempt
  * @param {number} [attempts]
- * @returns {Promise<{ ok: boolean, ms: number, info?: object, url?: string }>} `url` is the socket URL that worked
+ * @returns {Promise<{ ok: boolean, ms: number, protocol: number|null, info?: object, url?: string }>} `url` is the socket URL that worked
  */
 export async function probe(address, timeoutMs = PROBE_TIMEOUT_MS, attempts = 2) {
   let result = { ok: false, ms: 0 };
@@ -341,18 +396,27 @@ function mount() {
     for (const s of list) {
       const st = states.get(s.key) || {};
       const custom = customEntryOf(s.key) != null;
-      const state = st.pending ? '检测中…' : st.ok ? `可连接 · ${st.ms}ms` : st.failed ? '无法连接' : '';
-      const info = st.info
-        ? [st.info.app ? `v${st.info.app}` : '', st.info.humans != null ? `在线 ${st.info.humans}` : '', st.info.rooms != null ? `房间 ${st.info.rooms}` : '']
-          .filter(Boolean).join(' · ')
-        : '';
+      // The wire protocol is what the client and server must agree on; a differing release number is fine.
+      const protocol = st.protocol ?? (Number.isInteger(st.info?.version) ? st.info.version : null);
+      const verdict = versionVerdict(PROTOCOL_VERSION, protocol);
+      const bad = verdict === 'mismatch' || (!st.pending && st.failed);
+      const state = st.pending ? '检测中…'
+        : verdict === 'mismatch' ? '协议不兼容'
+          : st.ok ? `可连接 · ${st.ms}ms`
+            : st.failed ? '无法连接' : '';
+      const info = [
+        st.info?.app ? `v${st.info.app}` : '',
+        versionLabel(PROTOCOL_VERSION, protocol) || '',
+        st.info?.humans != null ? `在线 ${st.info.humans}` : '',
+        st.info?.rooms != null ? `房间 ${st.info.rooms}` : '',
+      ].filter(Boolean).join(' · ') || s.note;
       const card = document.createElement('div');
       card.className = `sp-pick__card${s.key === selected ? ' is-sel' : ''}`;
       card.innerHTML = `
-        <div class="sp-pick__dot ${st.pending || !state ? '' : st.ok ? 'is-ok' : 'is-bad'}"></div>
+        <div class="sp-pick__dot ${st.pending || !state ? '' : bad ? 'is-bad' : st.ok ? 'is-ok' : ''}"></div>
         <div style="min-width:0">
           <div class="sp-pick__name">${esc(s.label)}${s.key === keyOf(buildDefault()) ? ' · 默认' : ''}</div>
-          <div class="sp-pick__addr">${esc(s.http.replace(/^https?:\/\//, ''))}${info || s.note ? ` · ${esc(info || s.note)}` : ''}</div>
+          <div class="sp-pick__addr">${esc(s.http.replace(/^https?:\/\//, ''))}${info ? ` · ${esc(info)}` : ''}</div>
         </div>
         <div class="sp-pick__state">${esc(state)}</div>
         ${custom ? '<button class="sp-pick__del" title="删除">×</button>' : ''}`;
@@ -376,7 +440,7 @@ function mount() {
     states.set(entry.key, { pending: true });
     renderList();
     probe(entry.address).then((r) => {
-      states.set(entry.key, { ok: r.ok, ms: r.ms, info: r.info, failed: !r.ok, url: r.url });
+      states.set(entry.key, { ok: r.ok, ms: r.ms, protocol: r.protocol, info: r.info, failed: !r.ok, url: r.url });
       renderList();
       if (!r.ok && entry.key === selected) setHint(`连不上 ${entry.http} —— 确认服务器已启动，或换一个地址。`);
     });
@@ -406,6 +470,14 @@ function mount() {
   function connected(entry) {
     // Prefer the URL that actually answered the probe: a typed `host:port` may only be reachable on one scheme.
     const st = entry?.key ? states.get(entry.key) : null;
+    // The wire protocol is the one thing the client and server must agree on (server/net.js): stop before rebooting
+    // into a server that would reject this client's handshake anyway. An unknown protocol (unprobed direct connect,
+    // or a probe that could not read one) is allowed — the server's own handshake is the backstop.
+    const protocol = st ? (st.protocol ?? (Number.isInteger(st.info?.version) ? st.info.version : null)) : null;
+    if (versionVerdict(PROTOCOL_VERSION, protocol) === 'mismatch') {
+      setHint(versionMismatchHint(PROTOCOL_VERSION, protocol));
+      return;
+    }
     const address = (st?.ok && st.url) ? st.url : entry?.address;
     const key = keyOf(address);
     if (!key) return;

@@ -504,4 +504,45 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('the shell relays a remote /healthz same-origin (the page cannot read it across origins)', async () => {
+    const { createStaticServer, HEALTHZ_PROXY_PATH } = await import('../desktop/serve.mjs');
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-serve-'));
+    writeFileSync(path.join(root, 'index.html'), HTML);
+    // Stand-in for the game server: /healthz only, and no CORS header — exactly what the real one sends.
+    const upstream = http.createServer((req, res) => {
+      if (req.url === '/healthz') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true,"version":1,"app":"0.1.3"}'); return; }
+      res.writeHead(404); res.end();
+    });
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+    let served;
+    try {
+      served = await createStaticServer({ root, port: 0, proxy: true, log: { warn() {}, error() {} } });
+      const target = `http://127.0.0.1:${upstream.address().port}/healthz`;
+      const got = await new Promise((resolve, reject) => {
+        http.get(`${served.url}${HEALTHZ_PROXY_PATH}?url=${encodeURIComponent(target)}`, (r) => {
+          let d = '';
+          r.on('data', (c) => { d += c; });
+          r.on('end', () => resolve({ status: r.statusCode, body: d }));
+        }).on('error', reject);
+      });
+      assert.equal(got.status, 200);
+      assert.deepEqual(JSON.parse(got.body), { ok: true, version: 1, app: '0.1.3' });
+    } finally {
+      await served?.close();
+      await new Promise((resolve) => upstream.close(resolve));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the relay only accepts this game\'s /healthz — it is never an open proxy', async () => {
+    const { healthzProxyTarget, HEALTHZ_PROXY_PATH } = await import('../desktop/serve.mjs');
+    const enc = encodeURIComponent;
+    assert.equal(healthzProxyTarget(`${HEALTHZ_PROXY_PATH}?url=${enc('http://127.0.0.1:3000/healthz')}`), 'http://127.0.0.1:3000/healthz');
+    assert.equal(healthzProxyTarget(`${HEALTHZ_PROXY_PATH}?url=${enc('http://127.0.0.1:3000/internal/secret')}`), null, 'other paths are refused');
+    assert.equal(healthzProxyTarget(`${HEALTHZ_PROXY_PATH}?url=${enc('file:///etc/passwd')}`), null, 'non-http schemes are refused');
+    assert.equal(healthzProxyTarget(`${HEALTHZ_PROXY_PATH}?url=${enc('http://127.0.0.1:3000/healthz')}&extra=1`), 'http://127.0.0.1:3000/healthz');
+    assert.equal(healthzProxyTarget(HEALTHZ_PROXY_PATH), null, 'no url param');
+    assert.equal(healthzProxyTarget('/js/main.js'), null, 'an ordinary file path is not intercepted');
+  });
 });

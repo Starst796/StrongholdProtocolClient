@@ -185,7 +185,7 @@ async function main() {
   // A pinned port (not `0`) keeps `http://127.0.0.1:<port>` — the page's origin — identical across launches.
   // Chromium scopes localStorage by origin, so this is what lets the identity token, the loadout, settings and
   // the picker's saved server survive a restart; an OS-assigned port would silently discard all of it.
-  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, log: console });
+  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, proxy: true, log: console });
   const query = serverOverride
     ? `?server=${encodeURIComponent(serverOverride)}`
     : (chooseServer ? '?pick=1' : '');

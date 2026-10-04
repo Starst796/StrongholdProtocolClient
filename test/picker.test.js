@@ -8,8 +8,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
+  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX, PROBE_HELLO,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA,
+  parseProbeReply, serverName, shouldShowPicker, versionLabel, versionMismatchHint, versionVerdict,
 } from '../shell/picker-core.js';
 
 describe('when the picker is shown', () => {
@@ -115,5 +116,43 @@ describe('server addresses', () => {
 
   test('storage keys are namespaced under sp.shell.* so they never collide with the game"s own keys', () => {
     for (const k of [K_SERVER, K_AUTOSTART, K_LIST, K_CHOSEN]) assert.match(k, /^sp\.shell\./);
+  });
+});
+
+describe('wire-version probe', () => {
+  test('the probe is a version-0 hello: every real server takes the mismatch branch before it makes a session', () => {
+    assert.deepEqual({ ...PROBE_HELLO }, { t: 'hello', name: 'sp-probe', version: 0 });
+  });
+
+  test('reads the server number out of the mismatch error the branch answers with', () => {
+    assert.equal(parseProbeReply({ t: 'error', code: 'BAD_MSG', detail: 'version mismatch: server 1' }), 1);
+    assert.equal(parseProbeReply({ t: 'error', code: 'BAD_MSG', detail: 'version mismatch: server 12' }), 12);
+  });
+
+  test('reads it from a welcome too, and yields null when the frame carries none', () => {
+    assert.equal(parseProbeReply({ t: 'welcome', version: 0 }), 0);
+    assert.equal(parseProbeReply({ t: 'error', code: 'BAD_MSG', detail: 'bad field name' }), null);
+    assert.equal(parseProbeReply({ t: 'welcome' }), null);
+    assert.equal(parseProbeReply(null), null);
+    assert.equal(parseProbeReply('nope'), null);
+  });
+
+  test('the verdict gates on the wire number only — a differing release version is irrelevant', () => {
+    assert.equal(versionVerdict(1, 1), 'ok');
+    assert.equal(versionVerdict(1, 2), 'mismatch');
+    assert.equal(versionVerdict(1, null), 'unknown');
+    assert.equal(versionVerdict(1, undefined), 'unknown');
+  });
+
+  test('the row label flags a server this client cannot enter', () => {
+    assert.equal(versionLabel(1, 1), '协议 v1');
+    assert.equal(versionLabel(1, 2), '协议 v2 · 需 v1');
+    assert.equal(versionLabel(1, null), null, 'nothing probed: no label rather than a wrong one');
+  });
+
+  test('the refusal hint names both numbers so the player knows which side to update', () => {
+    const h = versionMismatchHint(1, 2);
+    assert.match(h, /v2/);
+    assert.match(h, /v1/);
   });
 });

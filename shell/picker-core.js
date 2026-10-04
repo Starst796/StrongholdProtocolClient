@@ -108,3 +108,58 @@ export function addressError(raw) {
   if (/^[.:]/.test(rest) || rest.includes('..')) return '地址无法识别，检查一下主机名。';
   return null;
 }
+
+// ---- version probe ---------------------------------------------------------------------------------------------
+
+/**
+ * The throwaway `hello` the picker sends to learn a server's wire version — the client is bundled with its own game
+ * code, so this is the only thing a server has to agree on. Every real server runs `PROTOCOL_VERSION >= 1`, so a
+ * `version: 0` hello always lands on server/net.js's mismatch branch, which answers
+ * `error.detail = "version mismatch: server N"` *before* it validates the name or creates a session — the probe
+ * therefore never shows up as an online player.
+ */
+export const PROBE_HELLO = Object.freeze({ t: 'hello', name: 'sp-probe', version: 0 });
+
+/**
+ * Read a server's wire version out of its first reply to PROBE_HELLO. A mismatched server answers with the number in
+ * the error detail; a matching one answers `welcome` (only reachable if a server ever runs protocol 0).
+ * @param {unknown} msg decoded JSON frame
+ * @returns {number|null} the server's PROTOCOL_VERSION, or null when the frame carries none
+ */
+export function parseProbeReply(msg) {
+  if (!msg || typeof msg !== 'object') return null;
+  if (msg.t === 'welcome') return Number.isInteger(msg.version) ? msg.version : null;
+  const detail = msg.t === 'error' && typeof msg.detail === 'string' ? msg.detail : '';
+  const m = /version mismatch:\s*server\s+(\d+)/i.exec(detail);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Can this client talk to a server that speaks `serverProtocol`? The wire number is the gate (server/net.js), so a
+ * differing release version is irrelevant while the protocol matches.
+ * @param {number} clientProtocol @param {number|null} serverProtocol
+ * @returns {'ok'|'mismatch'|'unknown'}
+ */
+export function versionVerdict(clientProtocol, serverProtocol) {
+  if (!Number.isInteger(serverProtocol)) return 'unknown';
+  return serverProtocol === clientProtocol ? 'ok' : 'mismatch';
+}
+
+/**
+ * Short row label for a probed server, or null when nothing was learned.
+ * @param {number} clientProtocol @param {number|null} serverProtocol
+ * @returns {string|null}
+ */
+export function versionLabel(clientProtocol, serverProtocol) {
+  const verdict = versionVerdict(clientProtocol, serverProtocol);
+  if (verdict === 'unknown') return null;
+  return verdict === 'ok' ? `协议 v${serverProtocol}` : `协议 v${serverProtocol} · 需 v${clientProtocol}`;
+}
+
+/**
+ * Why a mismatched server cannot be entered (shown when the player tries). Assumes a known mismatch.
+ * @param {number} clientProtocol @param {number} serverProtocol
+ */
+export function versionMismatchHint(clientProtocol, serverProtocol) {
+  return `服务器协议 v${serverProtocol}，本机客户端 v${clientProtocol} —— 无法联机。请让服务器升级到兼容版本，或换一台服务器。`;
+}
