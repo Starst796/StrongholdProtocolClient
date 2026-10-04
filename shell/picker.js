@@ -29,6 +29,14 @@ const PROBE_TIMEOUT_MS = 4000;
 const isAndroid = () => isAndroidUA(globalThis.navigator?.userAgent);
 
 /**
+ * The real WebSocket, captured at module load — *before* /offline/bootstrap.js runs (it is loaded later, see
+ * index.html). In single-player that module replaces globalThis.WebSocket with the in-page loopback, whose socket
+ * opens instantly and answers no matter what address it is given: probing through it would report every server as
+ * "可连接 · 0ms" and 刷新 could never tell them apart. Reachability of a *remote* server must use a real socket.
+ */
+const NativeWebSocket = globalThis.WebSocket;
+
+/**
  * The address the payload was built for (runtime-config.js), captured before a remembered choice overrides
  * `__SP_SERVER__` further down — otherwise that remembered address would be listed as the "默认" one.
  */
@@ -146,7 +154,8 @@ function probeOnce(wsUrl, timeoutMs) {
       .catch(() => { /* no CORS or no route: the socket result decides */ });
 
     try {
-      socket = new WebSocket(wsUrl);
+      // NativeWebSocket, never globalThis.WebSocket: in single-player that is the in-page loopback (see above).
+      socket = new NativeWebSocket(wsUrl);
     } catch {
       finish(false);
       return;

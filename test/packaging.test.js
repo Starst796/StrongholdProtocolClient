@@ -196,6 +196,8 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
       const bootstrapAt = html.indexOf('<script type="module" src="/offline/bootstrap.js">');
       assert.ok(bootstrapAt !== -1, 'index.html must load /offline/bootstrap.js');
       assert.ok(bootstrapAt < html.indexOf('<script type="module" src="/js/main.js"'), 'the offline bootstrap runs before the game boots');
+      // the picker must load *before* the offline layer: it captures the real WebSocket constructor at module load
+      assert.ok(pickerAt < bootstrapAt, 'the picker loads before /offline/bootstrap.js (it captures the native WebSocket)');
       assert.match(html, /"node:crypto": "\/offline\/node-crypto\.js"/);
       assert.match(html, /"node:net": "\/offline\/node-net\.js"/);
       // ...and the shell stylesheet must come after every game stylesheet, so it wins on equal specificity
@@ -205,6 +207,27 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
+  });
+});
+
+describe('shell picker latency probe', () => {
+  // In single-player the offline layer replaces globalThis.WebSocket with the in-page loopback; probing through it
+  // made every listed server report "可连接 · 0ms" (and 刷新 could not tell them apart). The picker must keep the
+  // real constructor captured at module load (before /offline/bootstrap.js) and probe with that.
+  const src = readFileSync(path.join(ROOT, 'shell', 'picker.js'), 'utf8');
+
+  test('captures the real WebSocket at module load', () => {
+    assert.match(src, /const NativeWebSocket = globalThis\.WebSocket;/);
+  });
+
+  test('the probe constructs the captured constructor, never the (overridable) global', () => {
+    assert.match(src, /socket = new NativeWebSocket\(wsUrl\);/);
+    assert.ok(!/new WebSocket\(/.test(src), 'a bare `new WebSocket(` would use the offline loopback in single-player');
+  });
+
+  test('the override can only ever see the loopback', () => {
+    const off = readFileSync(path.join(ROOT, 'offline', 'bootstrap.js'), 'utf8');
+    assert.match(off, /globalThis\.WebSocket = function OfflineWebSocket/);
   });
 });
 
