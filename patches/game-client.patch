@@ -10,14 +10,16 @@ index 82a085e..360d735 100644
 +  <link rel="stylesheet" href="/css/shell-display.css" />
  
    <script type="importmap">
-     { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js" } }
-@@ -93,6 +95,9 @@
+-    { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js" } }
++    { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js", "node:crypto": "/offline/node-crypto.js", "node:net": "/offline/node-net.js" } }
+@@ -93,6 +95,10 @@
        if (/specifier|resolve|import|module/i.test(String(ev && ev.message))) window.__spBootFail('load');
      });
    </script>
 +  <!-- Packaged-client server address (empty in the web build → the page's own origin). Must run before /js/main.js. -->
 +  <script src="/js/runtime-config.js"></script>
 +  <script type="module" src="/js/shell/picker.js"></script>
++  <script type="module" src="/offline/bootstrap.js"></script>
    <script type="module" src="/js/main.js" onerror="window.__spBootFail && window.__spBootFail('load')"></script>
    <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
    <script>

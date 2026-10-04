@@ -6,8 +6,9 @@
 //
 //   js/net.js            defaultWsUrl() honours globalThis.__SP_SERVER__ and ?server=host
 //   js/screens/room.js   invite links (复制链接 / ?room=CODE) point at the remote web client
-//   index.html           loads /js/runtime-config.js + /js/shell/picker.js before the module graph, and the shell
-//                        stylesheet (css/shell-display.css) after the game's own CSS
+//   index.html           loads /js/runtime-config.js + /js/shell/picker.js + /offline/bootstrap.js before the module
+//                        graph, and the shell stylesheet (css/shell-display.css) after the game's own CSS; its import
+//                        map maps node:crypto / node:net to the offline shims the in-page server imports
 //
 // It is a normal `git diff` against the game's public/ tree, so it is applied with `-p2` (payload root ↔ public/).
 // The patch target is the payload copy — the game checkout is never touched. When upstream edits one of those files

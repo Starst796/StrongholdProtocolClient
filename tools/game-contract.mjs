@@ -24,6 +24,25 @@ export function resetData() {}
 /** Node-only files under server/sim (server/index.js SIM_PRIVATE, lower-case, compared case-insensitively). */
 export const SIM_PRIVATE = Object.freeze(['nodedata.js']);
 
+/**
+ * server/ files the offline payload never ships, as server-relative paths (lower-case): index.js (node:http/fs
+ * entry), data.js (replaced by the browser stand-in generated from offline/data-provider.js), sim/nodeData.js
+ * (Node-only sim loader) and match/StubMatch.js (the platform test double). Nested `index.js` files (e.g.
+ * sim/content/index.js) are real modules and must ship.
+ */
+export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js']);
+
+/**
+ * The server/ subtree the offline payload mirrors into /server/ for the in-page server (net.js, lobby.js, match/**,
+ * sim/** minus the private files above). `server/match/*` imports `../sim/...`, which resolves to /server/sim/*
+ * inside the payload (so the engine keeps reading game data through the generated /server/data.js, exactly as the
+ * real server does). The browser client keeps using its own /sim mount.
+ */
+export const SERVER_MOUNT = Object.freeze({ src: 'server', dst: 'server' });
+
+/** Node specifiers the in-page server is allowed to import (swapped for payload shims through the import map). */
+export const SERVER_NODE_BUILTINS = Object.freeze(['node:crypto', 'node:net']);
+
 /** Files that identify a Stronghold-Protocol checkout. */
 export const GAME_MARKERS = Object.freeze(['public/index.html', 'shared/constants.js', 'server/index.js', 'server/sim/simdata.js']);
 

@@ -7,10 +7,10 @@
 // can set `globalThis.__SP_SERVER__` (read by public/js/net.js through resolveServerTarget) before the game opens
 // its socket. The browser build has no such file and stays pinned to its own origin.
 //
-// Layout (Minecraft-like): a main page offers 单人游戏 / 多人游戏. 单人游戏 is reserved — the game has no
-// server-less mode (the lobby/room/match lifecycle is server-authoritative) — so it only explains itself. 多人游戏
-// opens the server list, where the player can add a server (name + address), connect directly to a typed address,
-// or join a listed/remembered one.
+// Layout (Minecraft-like): a main page offers 单人游戏 / 多人游戏. 单人游戏 boots the in-page single-player server
+// (offline/bootstrap.js): it writes `sp.shell.mode = 'solo'` and reloads, and the offline layer runs the game's own
+// lobby / match engine over an in-memory WebSocket — no server needed. 多人游戏 opens the server list, where the
+// player can add a server (name + address), connect directly to a typed address, or join a listed/remembered one.
 //
 // Behaviour
 //   * a remembered choice in localStorage decides the server for the next launch;
@@ -21,7 +21,7 @@
 
 import { toHttpUrl, toWsUrl } from '../net.js';
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
+  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_MODE, K_SERVER, NAME_MAX,
   addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
 } from './picker-core.js';
 
@@ -282,7 +282,7 @@ function mount() {
       <div class="sp-pick__menu">
         <button class="sp-pick__mode" id="sp-solo">
           <span class="sp-pick__mode-name">单人游戏</span>
-          <span class="sp-pick__mode-note">离线模拟 · 开发中</span>
+          <span class="sp-pick__mode-note">离线模拟 · 无需服务器</span>
         </button>
         <button class="sp-pick__mode is-primary" id="sp-multi">
           <span class="sp-pick__mode-name">多人游戏</span>
@@ -400,12 +400,16 @@ function mount() {
     const address = (st?.ok && st.url) ? st.url : entry?.address;
     const key = keyOf(address);
     if (!key) return;
+    // Leaving single-player: the page booted with the in-page server, so it must reload to get the real WebSocket
+    // back — even when the chosen address is the one the payload was built for.
+    const wasSolo = readItem(K_MODE, 'localStorage') === 'solo';
+    writeItem(K_MODE, 'multi', 'localStorage');
     writeItem(K_SERVER, address, 'localStorage');
     const autoEl = root.querySelector('#sp-auto');
     if (autoEl) writeItem(K_AUTOSTART, autoEl.checked ? '1' : '0', 'localStorage');
     writeItem(K_CHOSEN, '1', 'sessionStorage');
     // Already the server the game booted with (it reads the same localStorage entry): just close the overlay.
-    if (key === bootTarget) {
+    if (!wasSolo && key === bootTarget) {
       hidePicker();
       return;
     }
@@ -481,7 +485,14 @@ function mount() {
   function layout() {
     root.innerHTML = screen === 'home' ? HOME_HTML : MULTI_HTML;
     if (screen === 'home') {
-      root.querySelector('#sp-solo').addEventListener('click', () => setHint('单人模式还没做：游戏的大厅 / 房间 / 模拟都在服务端，暂时不能脱离服务器运行，敬请期待。'));
+      root.querySelector('#sp-solo').addEventListener('click', () => {
+        // Single-player runs the game server inside the page (offline/bootstrap.js); remember the choice and reboot
+        // so that module is loaded before the game boots.
+        writeItem(K_MODE, 'solo', 'localStorage');
+        writeItem(K_CHOSEN, '1', 'sessionStorage');
+        hidePicker();
+        globalThis.location.reload();
+      });
       root.querySelector('#sp-multi').addEventListener('click', () => { screen = 'multi'; form = null; setHint(''); layout(); loadList(); });
     } else {
       root.querySelector('#sp-back').addEventListener('click', () => { screen = 'home'; form = null; editingKey = null; setHint(''); layout(); });

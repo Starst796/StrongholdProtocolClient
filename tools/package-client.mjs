@@ -23,7 +23,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { DATA_SHIM_JS, GAME_MOUNTS, SIM_PRIVATE, findGameRoot, readAppVersion, readProtocolVersion, verifyGameContract } from './game-contract.mjs';
+import {
+  DATA_SHIM_JS, GAME_MOUNTS, SERVER_MOUNT, SERVER_NODE_BUILTINS, SERVER_PRIVATE, SIM_PRIVATE,
+  findGameRoot, readAppVersion, readProtocolVersion, verifyGameContract,
+} from './game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
 
 export const CLIENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,9 +35,17 @@ export const DEFAULT_OUT = path.join(CLIENT_ROOT, 'build', 'client', 'www');
 export const CONFIG_FILE = path.join(CLIENT_ROOT, 'client.config.json');
 /** Served when the optional local-client art was never extracted (mirrors server/index.js EMPTY_LOCAL_ART). */
 const EMPTY_LOCAL_ART = JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} });
-/** Per-mount filter: server/index.js serves /sim as ES modules only, minus the Node-only loader. */
+/**
+ * Per-mount filter (ES modules only, minus each mount's Node-only / replaced files):
+ *   sim    — server/index.js serves /sim as ES modules only, minus the Node-only loader;
+ *   server — the offline payload mirrors server/ so the in-page server (offline/bootstrap.js) can import the real
+ *            net.js / lobby.js / match engine. server/match/* import `../sim/...`, which resolves to /server/sim/*
+ *            inside the payload (the engine reads game data through the generated /server/data.js), so server/sim is
+ *            mirrored here too; the browser client keeps using its own /sim mount (public/js/battle/runner.js).
+ */
 const MOUNT_KEEP = {
   sim: (rel) => rel.endsWith('.js') && !SIM_PRIVATE.includes(path.basename(rel).toLowerCase()),
+  server: (rel) => rel.endsWith('.js') && !SERVER_PRIVATE.includes(rel.toLowerCase()),
 };
 
 /** client.config.json (gameRoot pointer, defaults) — a missing file is fine. */
@@ -78,7 +89,7 @@ export function gameInfo(gameRoot) {
 /**
  * Assemble the standalone client payload.
  * @param {{
- *   gameRoot?: string, server?: string, out?: string, patchFile?: string, skipPatches?: boolean,
+ *   gameRoot?: string, server?: string, out?: string, patchFile?: string, skipPatches?: boolean, offline?: boolean,
  *   log?: (...a: any[]) => void, warn?: (...a: any[]) => void,
  * }} [opts]
  * @returns {{ out: string, gameRoot: string, server: string, game: object, files: number, bytes: number, copied: number, removed: number, patched: object[], missingAssets: boolean }}
@@ -89,6 +100,7 @@ export function assembleClient(opts = {}) {
   const config = loadConfig();
   const gameRoot = path.resolve(opts.gameRoot ?? findGameRoot({ clientRoot: CLIENT_ROOT, config }));
   const server = String(opts.server ?? config.defaultServer ?? DEFAULT_SERVER).trim() || DEFAULT_SERVER;
+  const offline = !!opts.offline;
   const out = path.resolve(opts.out ?? DEFAULT_OUT);
 
   verifyGameContract(gameRoot);
@@ -97,7 +109,7 @@ export function assembleClient(opts = {}) {
   let copied = 0;
   // Files the payload does not mirror but *derives*: the generated ones (shim, server address, provenance) and the
   // patched ones (see tools/payload-patches.mjs). Skipping them here keeps the patch from stacking on itself.
-  const DERIVED = new Set(['data.js', 'js/runtime-config.js', 'build.json', ...PATCHED_FILES]);
+  const DERIVED = new Set(['data.js', 'server/data.js', 'js/runtime-config.js', 'build.json', ...PATCHED_FILES]);
 
   /** Mirror one source tree into the payload; every mirrored path is recorded in `expected`. */
   const mirror = (relSrc, relDst, keep = null) => {
@@ -133,6 +145,9 @@ export function assembleClient(opts = {}) {
   };
 
   for (const m of GAME_MOUNTS) mirror(m.src, m.dst, MOUNT_KEEP[m.dst] ?? null);
+  // The in-page server (offline/bootstrap.js) imports the real game server code; mirror it for the offline layer.
+  mirror(SERVER_MOUNT.src, SERVER_MOUNT.dst, MOUNT_KEEP.server);
+  assertServerNeedsOnlyShims(out);
 
   /** Write a generated file (only when its content changed, so mtimes stay stable across rebuilds). */
   const writeGenerated = (relDst, body) => {
@@ -148,12 +163,17 @@ export function assembleClient(opts = {}) {
 
   // /data.js — the browser stand-in for server/data.js (the sim's content modules import '../../../data.js').
   writeGenerated('data.js', DATA_SHIM_JS);
+  // /server/data.js — the in-page server's data source (the lobby / match engine import it as `../data.js`).
+  writeGenerated('server/data.js', serverDataSource(dataFileNames(gameRoot)));
+  // The offline runtime layer: import-map shims, the browser data provider, the loopback socket and the boot module
+  // (loaded by the patched index.html before main.js; a no-op unless the launch mode is 'solo').
+  for (const [name, rel] of OFFLINE_FILES) writeGenerated(rel, offlineSource(name));
   // Optional local-client art: a static server can't synthesise the empty manifest, so materialise it.
   const localArt = path.join(out, 'data', 'local-assets.json');
   if (fs.existsSync(localArt)) expected.add(path.resolve(localArt));
   else writeGenerated(path.join('data', 'local-assets.json'), EMPTY_LOCAL_ART + '\n');
-  // The packaged client's server address (read by public/js/net.js through globalThis.__SP_SERVER__).
-  writeGenerated('js/runtime-config.js', runtimeConfigSource(server));
+  // The packaged client's server address (read by public/js/net.js) and the offline flag (read by /offline/bootstrap.js).
+  writeGenerated('js/runtime-config.js', runtimeConfigSource(server, offline));
   // The shell's pre-game server picker, its pure rules, and the display tweaks for short screens (see shell/).
   // Client-repo only: the browser build has neither file, its server is always its own origin and its HUD is the
   // one the game repo ships.
@@ -206,10 +226,15 @@ export function assembleClient(opts = {}) {
   return { out, gameRoot, server, game, files, bytes, copied, removed, patched, missingAssets };
 }
 
-/** Body of the rewritten /js/runtime-config.js. */
-export function runtimeConfigSource(server) {
+/**
+ * Body of the rewritten /js/runtime-config.js. `__SP_SERVER__` is the packaged client's server address (read by
+ * public/js/net.js); `__SP_OFFLINE__` makes a browser build boot into the in-page single-player server by default
+ * (read by offline/bootstrap.js — the shell picker's `sp.shell.mode` overrides it).
+ */
+export function runtimeConfigSource(server, offline = false) {
   return `// Generated by tools/package-client.mjs — do not edit (the game repo ships no such file).
 globalThis.__SP_SERVER__ = ${JSON.stringify(server)};
+globalThis.__SP_OFFLINE__ = ${offline ? 'true' : 'false'};
 `;
 }
 
@@ -226,9 +251,88 @@ export function shellSource(name) {
   return fs.readFileSync(path.join(CLIENT_ROOT, 'shell', name), 'utf8');
 }
 
+/** Payload paths of the offline runtime layer — offline/<name>, copied verbatim (imported by the in-page server). */
+export const OFFLINE_FILES = [
+  ['node-crypto.js', 'offline/node-crypto.js'],
+  ['node-net.js', 'offline/node-net.js'],
+  ['data-provider.js', 'offline/data-provider.js'],
+  ['loopback.js', 'offline/loopback.js'],
+  ['bootstrap.js', 'offline/bootstrap.js'],
+];
+
+/** Body of a payload offline-layer file — offline/<name>, copied verbatim. */
+export function offlineSource(name) {
+  return fs.readFileSync(path.join(CLIENT_ROOT, 'offline', name), 'utf8');
+}
+
+/** Data file basenames the payload mirrors (data/*.json) — what /server/data.js fetches. */
+export function dataFileNames(gameRoot) {
+  try {
+    return fs.readdirSync(path.join(gameRoot, 'data'))
+      .filter((f) => f.toLowerCase().endsWith('.json'))
+      .map((f) => f.slice(0, -'.json'.length))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Body of the generated /server/data.js — the in-page server's data source (browser stand-in for server/data.js). */
+export function serverDataSource(files) {
+  return `// Generated by tools/package-client.mjs — browser stand-in for the game's server/data.js.
+// The lobby / match engine import this module (as \`../data.js\`); it fetches the same data/*.json the server reads
+// from disk. See offline/data-provider.js.
+import { createDataModule } from '/offline/data-provider.js';
+
+const mod = createDataModule({ base: '/data/', files: ${JSON.stringify(files)} });
+
+export const {
+  getData, resetData, loadData, lookup, getConfig, getMode,
+  getChess, getBond, getGarrison, getItem, getBand, getEffect,
+  getEnemy, getWave, getStage, getBoss, getToken,
+} = mod;
+export const DATA_FILES = mod.DATA_FILES;
+export const DATA_DIR = mod.DATA_DIR;
+export const ROOT = mod.ROOT;
+export const deepFreeze = mod.deepFreeze;
+export const INDEXED_FILES = mod.INDEXED_FILES;
+`;
+}
+
+/**
+ * The in-page server runs the game's server code, so it may only import the node builtins the payload ships shims
+ * for (SERVER_NODE_BUILTINS, mapped in index.html). If upstream adds another `node:` import it would break at
+ * runtime in the WebView; fail the build instead.
+ * @param {string} payloadRoot
+ */
+export function assertServerNeedsOnlyShims(payloadRoot) {
+  const dir = path.join(payloadRoot, 'server');
+  if (!fs.existsSync(dir)) return;
+  const allowed = new Set(SERVER_NODE_BUILTINS);
+  const stack = [''];
+  while (stack.length) {
+    const rel = stack.pop();
+    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { stack.push(childRel); continue; }
+      if (!e.isFile() || !e.name.endsWith('.js')) continue;
+      // Strip comments first: JSDoc type references like `import('node:http').IncomingMessage` are not real imports.
+      const body = fs.readFileSync(path.join(dir, childRel), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/[^\n]*/g, '');
+      for (const m of body.matchAll(/['"](node:[a-z_/]+)['"]/g)) {
+        if (!allowed.has(m[1])) {
+          throw new Error(`server/${childRel} imports ${m[1]}, which the offline shims do not provide — `
+            + `add a shim in offline/ and map it in patches/game-client.patch (allowed: ${[...allowed].join(', ')})`);
+        }
+      }
+    }
+  }
+}
+
 /** CLI arguments shared by package-client / package-desktop / package-android. */
 export function parseCommonArgs(argv) {
-  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, help: false };
+  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, offline: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -243,6 +347,8 @@ export function parseCommonArgs(argv) {
     else if (key === '--dir') o.dir = true;
     else if (key === '--portable') o.portable = true;
     else if (key === '--skip-install') o.skipInstall = true;
+    // A web build that boots into the in-page single-player server (packaged clients pick it from the shell menu).
+    else if (key === '--offline') o.offline = true;
     else if (key === '-h' || key === '--help') o.help = true;
     else throw new Error(`unknown option ${a}`);
   }
@@ -251,6 +357,6 @@ export function parseCommonArgs(argv) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const o = parseCommonArgs(process.argv.slice(2));
-  if (o.help) console.log('usage: node tools/package-client.mjs [--server <address>] [--game <checkout>] [--out <dir>] [--quiet]');
-  else assembleClient({ server: o.server, gameRoot: o.game, out: o.out, log: o.quiet ? () => {} : console.log });
+  if (o.help) console.log('usage: node tools/package-client.mjs [--server <address>] [--game <checkout>] [--out <dir>] [--offline] [--quiet]');
+  else assembleClient({ server: o.server, gameRoot: o.game, out: o.out, offline: o.offline, log: o.quiet ? () => {} : console.log });
 }

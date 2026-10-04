@@ -7,6 +7,7 @@ export const K_SERVER = 'sp.shell.server';       // last chosen address
 export const K_AUTOSTART = 'sp.shell.autostart'; // '1' = skip the picker next launch, '0' = always show
 export const K_LIST = 'sp.shell.list';           // user-added servers: JSON [{ name, address }]
 export const K_CHOSEN = 'sp.shell.chosen';       // sessionStorage: already entered once in this session
+export const K_MODE = 'sp.shell.mode';           // 'solo' = in-page single-player server, 'multi' = a real server
 
 /** Longest stored server name (the picker's "add server" field is capped to this). */
 export const NAME_MAX = 32;

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
-import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
+import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, OFFLINE_FILES, assertServerNeedsOnlyShims, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,6 +57,11 @@ function makeGameFixture() {
   write(root, 'server/sim/units.js', 'export const U = 1;\n');
   write(root, 'server/sim/content/support/index.js', 'export const S = 1;\n');
   write(root, 'server/sim/nodeData.js', 'node only\n');
+  // server/ mirror: the in-page server (only .js, no sim/ child, no Node-only / replaced files)
+  write(root, 'server/net.js', "import { randomBytes } from 'node:crypto';\nimport { isIP } from 'node:net';\nexport const N = 1;\n");
+  write(root, 'server/lobby.js', "import { randomInt } from 'node:crypto';\nexport const L = 1;\n");
+  write(root, 'server/match/Match.js', 'export const M = 1;\n');
+  write(root, 'server/match/StubMatch.js', 'stub\n');
   // the two declarations tools/game-contract.mjs mirrors (kept byte-identical to the real values)
   write(root, 'server/index.js', `export const DATA_SHIM_JS = \`${DATA_SHIM_JS}\`;\nconst SIM_PRIVATE = new Set(['nodedata.js']);\n`);
   // a stand-in for patches/game-client.patch, against the three files above
@@ -187,12 +192,34 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
       const pickerAt = html.indexOf('<script type="module" src="/js/shell/picker.js">');
       assert.ok(pickerAt !== -1, 'index.html must load /js/shell/picker.js');
       assert.ok(pickerAt < html.indexOf('<script type="module" src="/js/main.js"'), 'the picker runs before the game boots');
+      // the offline bootstrap runs before the game too, and the import map maps the node builtins its server imports
+      const bootstrapAt = html.indexOf('<script type="module" src="/offline/bootstrap.js">');
+      assert.ok(bootstrapAt !== -1, 'index.html must load /offline/bootstrap.js');
+      assert.ok(bootstrapAt < html.indexOf('<script type="module" src="/js/main.js"'), 'the offline bootstrap runs before the game boots');
+      assert.match(html, /"node:crypto": "\/offline\/node-crypto\.js"/);
+      assert.match(html, /"node:net": "\/offline\/node-net\.js"/);
       // ...and the shell stylesheet must come after every game stylesheet, so it wins on equal specificity
       const cssAt = html.indexOf('/css/shell-display.css');
       assert.ok(cssAt !== -1, 'index.html must link /css/shell-display.css');
       assert.ok(cssAt > html.lastIndexOf('/css/devices.css'), 'the shell stylesheet is loaded last');
     } finally {
       rmSync(out, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('offline server node-builtin guard', () => {
+  test('allows the shimmed builtins, ignores comments, rejects anything else', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    try {
+      // node:http appears only in a JSDoc type position — not a real import, must not trip the guard
+      write(dir, 'server/net.js', "import { randomBytes } from 'node:crypto';\nimport { isIP } from 'node:net';\n/** @param {import('node:http').IncomingMessage} r */\nexport const N = 1;\n");
+      write(dir, 'server/lobby.js', "import { randomInt } from 'node:crypto';\nexport const L = 1;\n");
+      assert.doesNotThrow(() => assertServerNeedsOnlyShims(dir));
+      write(dir, 'server/match/M.js', "import fs from 'node:fs';\n");
+      assert.throws(() => assertServerNeedsOnlyShims(dir), /node:fs/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -211,9 +238,20 @@ describe('client payload assembly', () => {
     assert.equal(r.server, DEFAULT_SERVER);
     assert.equal(r.missingAssets, false);
     assert.equal(r.patched.length, PATCHED_FILES.length);
-    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json']) {
+    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json', 'offline/node-crypto.js', 'offline/node-net.js', 'offline/data-provider.js', 'offline/loopback.js', 'offline/bootstrap.js', 'server/data.js', 'server/net.js', 'server/lobby.js', 'server/match/Match.js', 'server/sim/units.js']) {
       assert.ok(existsSync(path.join(out, rel)), `${rel} must be in the payload`);
     }
+    // the offline layer is copied verbatim (its /offline/* imports must resolve)
+    for (const [name, rel] of OFFLINE_FILES) {
+      assert.equal(readFileSync(path.join(out, rel), 'utf8'), readFileSync(path.join(ROOT, 'offline', name), 'utf8'));
+    }
+    // the in-page server's data source lists the data files the payload mirrors
+    assert.match(readFileSync(path.join(out, 'server', 'data.js'), 'utf8'), /files: \["chess"\]/);
+    // ...and server/ ships the runtime modules only: no entry point, no fs data loader, no Node-only / stub files
+    assert.ok(!existsSync(path.join(out, 'server', 'index.js')));
+    assert.ok(!existsSync(path.join(out, 'server', 'nodeData.js')));
+    assert.ok(!existsSync(path.join(out, 'server', 'sim', 'nodeData.js')));
+    assert.ok(!existsSync(path.join(out, 'server', 'match', 'StubMatch.js')));
     // the picker and the display tweaks are copied verbatim, so /js/shell/picker.js can import ../net.js and
     // ./picker-core.js, and css/shell-display.css overrides css/devices.css by load order
     for (const [name, rel] of SHELL_FILES) {
@@ -261,6 +299,8 @@ describe('client payload assembly', () => {
 test('the packaged clients default to a server the player runs locally', () => {
   assert.equal(DEFAULT_SERVER, 'localhost:3000');
   assert.match(runtimeConfigSource(DEFAULT_SERVER), /globalThis\.__SP_SERVER__ = "localhost:3000";/);
+  assert.match(runtimeConfigSource(DEFAULT_SERVER), /globalThis\.__SP_OFFLINE__ = false;/, 'packaged clients default to the shell picker');
+  assert.match(runtimeConfigSource(DEFAULT_SERVER, true), /globalThis\.__SP_OFFLINE__ = true;/, '--offline boots the web build into single-player');
   // client.config.json points at the sibling checkout and the local server
   const config = JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'client.config.json'), 'utf8'));
   assert.equal(config.gameRoot, '../Stronghold-Protocol');
@@ -325,6 +365,8 @@ describe('desktop packaging layout', () => {
     assert.equal(o.portable, true);
     assert.equal(parseCommonArgs([]).portable, false);
     assert.equal(parseCommonArgs(['--dir']).dir, true, '--dir is still accepted (it is the default now)');
+    assert.equal(parseCommonArgs(['--offline']).offline, true, '--offline builds a web client that boots single-player');
+    assert.equal(parseCommonArgs([]).offline, false);
     assert.throws(() => parseCommonArgs(['--nope']), /unknown option/);
   });
 });

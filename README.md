@@ -1,6 +1,6 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器；官方远程服已下线）。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有两条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**多人游戏**仍走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器；官方远程服已下线）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
@@ -47,7 +47,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 ## 与游戏仓库的契约（重要）
 
 - **游戏仓库只读**：`git status` 永远干净，`git pull` 不会因为打包而冲突。客户端的改动是补丁：
-  `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`index.html`（模块图之前载入 `/js/runtime-config.js` 与 `/js/shell/picker.js`，`css/devices.css` 之后载入 `/css/shell-display.css`）。
+  `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）。
 - 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。此时重新生成 `patches/game-client.patch` 即可。
 - `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照 `server/index.js` 校验。
 - 产物里记录构建来源：payload 的 `build.json` 与 `build/client/manifest.json` 都有 `git describe` + commit + `PROTOCOL_VERSION`。
@@ -110,7 +110,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 
 端侧客户端进游戏前有一个 Minecraft 风格的菜单（`shell/picker.js`），盖住启动画面：
 
-- **主页**：上下两个选项——**单人游戏**（预留：游戏的大厅 / 房间 / 模拟都在服务端，还没有"纯前端单机"的实现，点了只给提示）、**多人游戏**。
+- **主页**：上下两个选项——**单人游戏**（完全离线：把游戏服务器跑在页面里，无需任何服务器）、**多人游戏**。
 - **多人游戏页**：服务器列表 + **添加服务器**（填名称与地址）、**直接连接**（只填地址，连上后不进列表）、**编辑**（改选中的自建服务器；内置的"本机 / 局域网"与打包默认服不可改）、**刷新**（把所有服务器重新测一遍延迟）与"返回"。
 - **列出的服务器**：内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包时指定的地址会作为"默认服务器"列出；再加上自己添加的服务器（存在客户端本地，旧的"只存地址"格式会自动升级成"名称 + 地址"）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
 - **地址怎么写**：`host`、`host:port`、`http(s)://…`、`ws(s)://…` 都行，**不用手写协议**——不带协议时，带端口的地址先按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的那个连不上就自动换另一种协议再试，哪个通用哪个，并把那个地址记下来。所以公网 IP + 端口（如 `211.71.60.138:3000`）能直接填。
@@ -119,6 +119,21 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 - **重启后不丢本地缓存**：身份 token、干员调配、设置都存在 `localStorage` 里，而它是按"源"隔离的——所以桌面壳固定用 `127.0.0.1:47821`（`desktop/serve.mjs` 的 `DEFAULT_PORT`），每次启动都是同一个源，重启后原样读回（以前每次随机端口 = 每次换源，等于重装）。Android 本来就从固定的 `https://localhost` 提供页面，无需处理。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.4。
 - Android 上连局域网的 `ws://` 需要 APK 打开 `allowMixedContent`（本仓库默认打开，原因见 [docs/PACKAGING.md](docs/PACKAGING.md) §5）。
 - 优先级：`--server <地址>`（本次运行强制）> 命令行/`?server=` > 选择页记住的地址 > 打包时的默认地址。选择页只是把选择写进 `localStorage`（`sp.shell.*`）并重载页面，`js/net.js` 一条代码都没多改。
+
+## 单人游戏（离线，无需服务器）
+
+单人游戏把游戏服务器的运行时代码搬进页面。`tools/package-client.mjs` 把游戏仓库的 `server/`（`net.js`、`lobby.js`、`match/`、`sim/`，去掉 `index.js`/`data.js`/`nodeData.js`/`StubMatch.js` 等 Node 专用文件）摊平进 payload 的 `/server/`，把 `/server/data.js` 换成从 `/data/*.json` 取数的浏览器版，并生成 `/offline/` 一层：
+
+| 文件 | 作用 |
+|---|---|
+| `offline/bootstrap.js` | 启动页内 `Network` + `Lobby`；把 `globalThis.WebSocket` 换成内存回环实现，`public/js/net.js` 照常连接，对面就是页内服务器。单人模式还会把大厅默认设为「独立模拟」并隐藏「同盟模拟」入口 |
+| `offline/loopback.js` | 内存 WebSocket 双端：客户端侧是 Web 标准 API，服务端侧是 `ws` 接口（`server/net.js` 原样使用） |
+| `offline/node-crypto.js`、`offline/node-net.js` | `node:crypto` / `node:net` 的浏览器 shim，由 `index.html` 的 import map 指过去（回环 socket 表现为 loopback 地址，不受限流影响） |
+| `offline/data-provider.js` | `/server/data.js` 的实现（抓取 `/data/*.json`，深冻结，提供与服务器同名的 getter） |
+
+启动模式（优先级从高到低）：`?mode=solo|multi` → `sp.shell.mode`（选择页写入）→ `globalThis.__SP_OFFLINE__`（`--offline` 构建的网页版默认 solo）。**单人模式只提供「独立模拟」**（对局引擎、战斗模拟都在本地，没有服务端跑 AI / 校验的开销）。
+
+网页版：`node tools/package-client.mjs --offline` 生成 `build/client/www`，放到任意静态托管的**站点根目录**即可（payload 内部都用根绝对路径）；exe / apk 用上面的打包命令产出，启动后在选择页选「单人游戏」。
 
 ## 许可
 
