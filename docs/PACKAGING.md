@@ -52,7 +52,7 @@ node tools/package-client.mjs --game D:\gits\Stronghold-Protocol --out D:\client
 
 | 文件 | 说明 |
 |---|---|
-| `desktop/main.mjs` | Electron 主进程：起本地静态服务、开窗口、外链走系统浏览器、F2（选择服务器）/ F11 / F5 / F12 快捷键、`--choose-server` |
+| `desktop/main.mjs` | Electron 主进程：起本地静态服务、开窗口、外链走系统浏览器、F2（选择服务器）/ F11 / F5 / F12 快捷键、`--choose-server`、`--insecure-tls`（接受自签证书，仅桌面版、默认关） |
 | `desktop/serve.mjs` | 只监听 `127.0.0.1` 的静态服务，默认端口 `DEFAULT_PORT`（47821，见 §4.4）；MIME 表与游戏仓库 `server/index.js` 一致，由 `test/packaging.test.js` 锁定 |
 | `desktop/package.json` | electron / electron-builder 与打包配置（`extraResources` 把 `build/client/www` 放进 `resources/www`；`electronLanguages` 只保留 `zh-CN`/`en-US`） |
 | `desktop/icon.ico` | 应用图标（取自客户端自带的盾牌图标） |
@@ -79,7 +79,7 @@ build/desktop/win-unpacked/     ← 分发这个目录
 
 ### 4.2 运行参数
 
-`StrongholdProtocol.exe --server <地址>`、`--choose-server`、`--fullscreen`；快捷键 F2（选择服务器）/ F11 / F5 / F12。开发时：
+`StrongholdProtocol.exe --server <地址>`、`--choose-server`、`--fullscreen`、`--insecure-tls`；快捷键 F2（选择服务器）/ F11 / F5 / F12。开发时：
 
 ```bash
 node tools/package-desktop.mjs --skip-install   # 先生成 build/client/www

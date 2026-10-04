@@ -62,7 +62,7 @@ npm run client:android -- --release                    # 未签名 release APK
 node tools/package-client.mjs --game ../Stronghold-Protocol --out D:\client-www
 ```
 
-桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--choose-server`、`--fullscreen`，快捷键 F2/F11/F5/F12）。
+桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--choose-server`、`--fullscreen`、`--insecure-tls`，快捷键 F2/F11/F5/F12）。`--insecure-tls` 用来连**自签证书**的自建服务器（例如自建 frp 穿透），它会**对整个应用关闭证书校验**，默认不开，只在你信任那台服务器时用；APK 没有这个开关。
 
 ## 桌面版为什么是"文件夹"而不是单文件 exe
 

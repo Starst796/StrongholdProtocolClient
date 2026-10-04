@@ -10,12 +10,16 @@
 // the game keeps its identity token, loadout and settings in — must be the same on every launch. Binding an
 // ephemeral port instead made every restart look like a fresh install (see serve.mjs).
 //
-//   StrongholdProtocol.exe [--server <address>] [--fullscreen] [--choose-server]
+//   StrongholdProtocol.exe [--server <address>] [--fullscreen] [--choose-server] [--insecure-tls]
 //
 // `--server` overrides the built-in address for this run (LAN play without a rebuild) by appending ?server=…
 // which public/js/net.js understands. Otherwise the client uses the server remembered by the in-page picker
 // (shell/picker.js): on a first run — or whenever it has nothing remembered — that picker covers the boot screen
 // and the player picks a server; `--choose-server` and F2 force it back up later.
+//
+// `--insecure-tls` accepts a self-signed certificate (a self-hosted frp tunnel, say). It is opt-in and broad: it
+// disables certificate verification for every connection the app makes, so it is only for a server you run
+// yourself. The Android build has no equivalent switch.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +62,13 @@ function argValue(name) {
 const serverOverride = argValue('--server').trim();
 const chooseServer = !serverOverride && process.argv.includes('--choose-server');
 const startFullscreen = process.argv.includes('--fullscreen');
+/**
+ * `--insecure-tls`: accept a self-signed certificate — a home-grown frp tunnel or a reverse proxy with its own CA,
+ * which Chromium otherwise refuses with ERR_CERT_AUTHORITY_INVALID. Opt-in and off by default, because it turns
+ * certificate verification off for the *whole* app, not just one server (see docs/PACKAGING.md §4.2).
+ */
+const insecureTls = process.argv.includes('--insecure-tls');
+if (insecureTls) app.commandLine.appendSwitch('ignore-certificate-errors');
 
 // Crash / failure diagnostics. Nothing here quits the app: a renderer that dies is reloaded by the handler below,
 // and an unhandled error must not turn into a silent exit (which is what "打开干员调配就闪退" looks like).
@@ -98,6 +109,7 @@ function registerShortcuts(wc) {
 
 async function main() {
   buildMenu();
+  if (insecureTls) log('[client] --insecure-tls: certificate verification is OFF for this run (self-signed servers)');
 
   if (!existsSync(path.join(WWW, 'index.html'))) {
     dialog.showErrorBox(TITLE, `客户端资源缺失 / client payload missing:\n${WWW}\n\n先运行 npm run client:build 生成客户端资源。`);

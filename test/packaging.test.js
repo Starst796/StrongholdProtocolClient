@@ -360,6 +360,13 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     assert.match(src, /createStaticServer\(\{[^}]*port:\s*DEFAULT_PORT/, 'the static server must be given the pinned port');
   });
 
+  test('--insecure-tls stays opt-in (certificate verification is never disabled by default)', () => {
+    const src = readFileSync(path.join(ROOT, 'desktop', 'main.mjs'), 'utf8');
+    assert.match(src, /process\.argv\.includes\('--insecure-tls'\)/, 'the flag is read from the command line');
+    assert.match(src, /if \(insecureTls\) app\.commandLine\.appendSwitch\('ignore-certificate-errors'\)/, 'it only switches when asked for');
+    assert.ok(!/^\s*app\.commandLine\.appendSwitch\('ignore-certificate-errors'\)/m.test(src), 'no unconditional switch');
+  });
+
   test('a busy port falls through to the next free one (deterministically) instead of failing', async () => {
     const { createStaticServer, PORT_SEARCH } = await import('../desktop/serve.mjs');
     const root = mkdtempSync(path.join(tmpdir(), 'sp-serve-'));
