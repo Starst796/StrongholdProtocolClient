@@ -360,11 +360,17 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     assert.match(src, /createStaticServer\(\{[^}]*port:\s*DEFAULT_PORT/, 'the static server must be given the pinned port');
   });
 
-  test('--insecure-tls stays opt-in (certificate verification is never disabled by default)', () => {
+  test('TLS: the shells ask once per server (trust-on-first-use) instead of verifying nothing', () => {
     const src = readFileSync(path.join(ROOT, 'desktop', 'main.mjs'), 'utf8');
-    assert.match(src, /process\.argv\.includes\('--insecure-tls'\)/, 'the flag is read from the command line');
-    assert.match(src, /if \(insecureTls\) app\.commandLine\.appendSwitch\('ignore-certificate-errors'\)/, 'it only switches when asked for');
-    assert.ok(!/^\s*app\.commandLine\.appendSwitch\('ignore-certificate-errors'\)/m.test(src), 'no unconditional switch');
+    assert.match(src, /app\.on\('certificate-error'/, 'the desktop shell decides per certificate');
+    assert.match(src, /event\.preventDefault\(\)/, 'it must take over Electron\'s default (reject) decision');
+    assert.match(src, /process\.argv\.includes\('--insecure-tls'\)/, '--insecure-tls answers without asking');
+    assert.ok(!/appendSwitch\('ignore-certificate-errors'\)/.test(src), 'verification is never disabled app-wide');
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8'));
+    assert.ok(pkg.build.files.includes('trust.mjs'), 'desktop/trust.mjs must ship with the shell');
+    const android = readFileSync(path.join(ROOT, 'mobile', 'android', 'app', 'src', 'main', 'java', 'site', 'starst', 'stronghold', 'MainActivity.java'), 'utf8');
+    assert.match(android, /onReceivedSslError/, 'the Android shell hooks SSL errors as well');
+    assert.match(android, /setWebViewClient\(new BridgeWebViewClient\(bridge\)/, 'it keeps Capacitor\'s client (local payload + bridge)');
   });
 
   test('a busy port falls through to the next free one (deterministically) instead of failing', async () => {

@@ -86,6 +86,25 @@ node tools/package-desktop.mjs --skip-install   # 先生成 build/client/www
 cd desktop && npm start
 ```
 
+#### 自签证书的服务器（首次信任 / trust-on-first-use）
+
+玩家自己开的服务器常常挂在 frp 隧道或反向代理后面，证书是自签的（SakuraFrp 的"自动 TLS"就是），Chromium 会直接拒绝（`ERR_CERT_AUTHORITY_INVALID`）。桌面壳因此**按服务器**做一次询问，而不是关掉校验：
+
+1. `certificate-error` 拦下这次失败（`desktop/main.mjs` → `desktop/trust.mjs`）；
+2. 弹窗给出 **域名 + 证书主题 + SHA-256 指纹**，并写明跳过的风险；
+3. 点"仍然连接"→ 记住这台服务器的**这张证书**（`%APPDATA%\StrongholdProtocol\trusted-certs.json`，形如 `{"frp-boy.com:60751":"sha256/…"}`）→ 连接继续，以后静默直连；
+4. 点"取消"→ 本次不连，且这一页不再弹（页面重载或切换服务器后会再问一次）。
+
+要点：
+
+- **其它服务器、其它请求照常严格校验**——和 `ignore-certificate-errors` 那种全局关闭不一样；
+- 证书**换了**（指纹不同，例如隧道换节点重新签）会再问一次，而不是默默放行；
+- 想撤销：删掉 `trusted-certs.json` 里的那一行（或整个文件）；
+- `--insecure-tls` = 不再询问，对所有证书直接放行（日志里会留一行说明）。只给"自己开服、不想被问"的人用；
+- 排错时看 `client.log`：`the certificate of <host> is not trusted … asking the player` / `player trusted … ` / `player declined …`。
+
+Android 版是同一套策略，见 §5。
+
 ### 4.3 崩溃与日志
 
 壳没有控制台在前台，所以一切异常都写进日志文件：
@@ -150,6 +169,8 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 > 桌面 / 平板不受影响：那些视口 `min(w/19.2, h/10.8) ≥ 40`，覆盖规则等于没写。真机上"系统栏是否消失、刘海是否被填满"需要装到手机上看（本仓库没有模拟器镜像），浏览器侧的比例是按上面这套测量的。
 
 **选择页在手机上也要缩小**：选择页（`shell/picker.js`）是客户端自带的覆盖层，px 排版、不跟游戏的根字号缩放，所以在 366 px 高的横屏手机上原来和桌面一样大。现在 `shell/picker.js` 的 `@media (max-height:520px),(max-width:560px)` 把标题 / 模式按钮 / 卡片 / 按钮 / 表单整体缩小（756×366 实测：整块菜单 217 px 高，一屏放得下；桌面 1920×1080 不变）。
+
+**自签证书的服务器**：Android 用同一套"首次信任"策略，实现是 `MainActivity` 里给 Capacitor 的 `BridgeWebViewClient` 加一个子类、只覆盖 `onReceivedSslError`（不清掉 Capacitor 自己的 client，本地 payload 与 JS 桥照常），证书信息与指纹在 `TrustedCerts.java`（`SslCertificate.getX509Certificate()` 是 API 29+，24–28 走 `SslCertificate.saveState` 的 `x509-certificate` 字节）。弹窗显示域名 + 证书主题 + SHA-256 指纹，"仍然连接"后按 `主机 = 指纹` 存进应用私有 `SharedPreferences`（`stronghold_trusted_certs`），之后静默直连；**其它服务器照常校验**，证书换了指纹变了会再问一次。Android 没有 `--insecure-tls` 那种"全部放行"的开关。
 
 **关于 `allowMixedContent`**：WebView 的页面本身是 `https://localhost`（`androidScheme`），而自建的局域网服务器只有 `ws://`（没有证书），Chromium 会把它当 mixed content 拦掉——`usesCleartextTraffic` 只管系统层的明文策略，管不了这个。所以 APK 里打开了 `allowMixedContent`，让选择服务器页里的 `ws://<局域网地址>:3000` 能用。**代价**：这一层保护没了，页面里的其他连接也可以降级到明文；官方服务器仍然走 `wss://`。不想要局域网联机的话，把 `mobile/capacitor.config.json` 改回 `false` 重新打包即可（`localhost` 属于"可信来源"，不受影响）。
 

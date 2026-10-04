@@ -62,7 +62,9 @@ npm run client:android -- --release                    # 未签名 release APK
 node tools/package-client.mjs --game ../Stronghold-Protocol --out D:\client-www
 ```
 
-桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--choose-server`、`--fullscreen`、`--insecure-tls`，快捷键 F2/F11/F5/F12）。`--insecure-tls` 用来连**自签证书**的自建服务器（例如自建 frp 穿透），它会**对整个应用关闭证书校验**，默认不开，只在你信任那台服务器时用；APK 没有这个开关。
+桌面客户端运行时也可以临时改服务器：`StrongholdProtocol.exe --server <地址>`（另有 `--choose-server`、`--fullscreen`、`--insecure-tls`，快捷键 F2/F11/F5/F12）。
+
+**自签证书的服务器（自建 frp / 反向代理）**：两端都是**首次信任**策略——连到证书不受信任的服务器时会弹一次窗（域名 + 证书主题 + SHA-256 指纹 + 风险说明），点"仍然连接"就记住**这台服务器的这张证书**（桌面：`%APPDATA%\StrongholdProtocol\trusted-certs.json`；Android：应用私有 SharedPreferences），之后静默直连；**其它服务器照常严格校验**，证书换了（指纹变了）会再问一次。想完全不弹窗就用 `--insecure-tls`（仅桌面，等于对所有服务器放行）。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.2 / §5。
 
 ## 桌面版为什么是"文件夹"而不是单文件 exe
 

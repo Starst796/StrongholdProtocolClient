@@ -17,15 +17,15 @@
 // (shell/picker.js): on a first run — or whenever it has nothing remembered — that picker covers the boot screen
 // and the player picks a server; `--choose-server` and F2 force it back up later.
 //
-// `--insecure-tls` accepts a self-signed certificate (a self-hosted frp tunnel, say). It is opt-in and broad: it
-// disables certificate verification for every connection the app makes, so it is only for a server you run
-// yourself. The Android build has no equivalent switch.
+// `--insecure-tls` accepts every certificate without asking (a player who runs a self-signed server and does not
+// want the prompt); the Android build asks the same question with an AlertDialog instead.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
 import { createStaticServer, DEFAULT_PORT } from './serve.mjs';
+import { describeCertificate, fingerprintOf, hostKey, isTrusted, loadTrusted, remember, saveTrusted, shortFingerprint } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Payload root: resources/www in a packaged app, build/client/www when running from the repo (`npm run client:desktop:dev`). */
@@ -63,12 +63,10 @@ const serverOverride = argValue('--server').trim();
 const chooseServer = !serverOverride && process.argv.includes('--choose-server');
 const startFullscreen = process.argv.includes('--fullscreen');
 /**
- * `--insecure-tls`: accept a self-signed certificate — a home-grown frp tunnel or a reverse proxy with its own CA,
- * which Chromium otherwise refuses with ERR_CERT_AUTHORITY_INVALID. Opt-in and off by default, because it turns
- * certificate verification off for the *whole* app, not just one server (see docs/PACKAGING.md §4.2).
+ * `--insecure-tls`: accept every certificate without asking, instead of prompting once per server (see the
+ * certificate-error handler below). For a player who runs a self-signed server and does not want to be asked.
  */
 const insecureTls = process.argv.includes('--insecure-tls');
-if (insecureTls) app.commandLine.appendSwitch('ignore-certificate-errors');
 
 // Crash / failure diagnostics. Nothing here quits the app: a renderer that dies is reloaded by the handler below,
 // and an unhandled error must not turn into a silent exit (which is what "打开干员调配就闪退" looks like).
@@ -81,6 +79,73 @@ app.on('quit', (_e, code) => log(`[client] quitting (exit code ${code})`));
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null;
+
+// ---- TLS trust (trust-on-first-use) -----------------------------------------------------------------------------
+// Chromium refuses a self-hosted server's self-signed certificate (an frp tunnel, say) with
+// ERR_CERT_AUTHORITY_INVALID. Instead of verifying nothing, ask once per server and remember the certificate that
+// was accepted: every other server stays verified, and a *changed* certificate asks again.
+const TRUST_FILE = path.join(app.getPath('userData'), 'trusted-certs.json');
+let trusted = loadTrusted(TRUST_FILE);
+/** Hosts whose prompt is on screen right now: further failures wait for it instead of stacking dialogs. */
+const prompting = new Set();
+/** Hosts the player declined: not asked again until the page reloads (switching servers reloads it). */
+const declined = new Set();
+let promptChain = Promise.resolve();
+
+/** Show the trust prompt, one dialog at a time whatever the reconnect loop does. */
+function askAboutCertificate({ host, fp, certificate }) {
+  const ask = () => {
+    if (!win || win.isDestroyed()) return Promise.resolve(false);
+    const { subject, issuer } = describeCertificate(certificate);
+    return dialog.showMessageBox(win, {
+      type: 'warning',
+      noLink: true,
+      buttons: ['仍然连接', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      title: '无法验证服务器证书',
+      message: `无法验证 ${host} 的证书`,
+      detail: [
+        `服务器：${host}`,
+        `证书主题：${subject}`,
+        `颁发者：${issuer}`,
+        `SHA-256 指纹：${shortFingerprint(fp)}`,
+        '',
+        '“仍然连接”只对这台服务器跳过证书校验（其它服务器照常校验）：网络上的其他人可能在冒充它，请只在确认这是自己或信得过的人开的服务器时才继续。决定会记住，证书以后变了会再问一次。',
+      ].join('\n'),
+    }).then((r) => r.response === 0);
+  };
+  promptChain = promptChain.then(ask, ask);
+  return promptChain;
+}
+
+app.on('certificate-error', (event, _wc, url, error, certificate, callback) => {
+  event.preventDefault();
+  const host = hostKey(url);
+  const fp = fingerprintOf(certificate);
+  if (isTrusted(trusted, host, fp)) { callback(true); return; }
+  if (insecureTls) {
+    trusted = remember(trusted, host, fp);
+    saveTrusted(TRUST_FILE, trusted);
+    callback(true);
+    return;
+  }
+  if (!host || !fp || declined.has(host) || prompting.has(host)) { callback(false); return; }
+  prompting.add(host);
+  log(`[client] the certificate of ${host} is not trusted (${error}) — asking the player, ${shortFingerprint(fp)}`);
+  askAboutCertificate({ host, fp, certificate }).then((ok) => {
+    prompting.delete(host);
+    if (ok) {
+      trusted = remember(trusted, host, fp);
+      saveTrusted(TRUST_FILE, trusted);
+      log(`[client] player trusted the certificate of ${host} (${shortFingerprint(fp)})`);
+    } else {
+      declined.add(host);
+      log(`[client] player declined the certificate of ${host}`);
+    }
+    callback(ok);
+  });
+});
 
 /** Keep the window on the local payload; anything else opens in the user's browser. */
 function openExternal(url) {
@@ -139,6 +204,8 @@ async function main() {
   });
   registerShortcuts(win.webContents);
   win.once('ready-to-show', () => win.show());
+  // A reload (the picker reloads after a choice) re-arms the prompt for servers the player had declined.
+  win.webContents.on('did-finish-load', () => declined.clear());
   win.on('close', () => log('[client] window closing'));
   win.on('closed', () => { log('[client] window closed'); win = null; });
   win.webContents.on('render-process-gone', (_e, d) => {
