@@ -388,6 +388,7 @@ function mount() {
       writeItem(K_LIST, JSON.stringify(rest), 'localStorage');
       form = null;
       setHint('');
+      renderForm();
       loadList(key);
     });
     addrEl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') wrap.querySelector('#sp-ok').click(); });
