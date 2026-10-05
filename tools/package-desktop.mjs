@@ -43,8 +43,13 @@ function pkgBin(dir, name) {
   }
 }
 
-function run(cmd, args, cwd) {
-  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32', env: childEnv() });
+/**
+ * Spawn a child, inheriting stdio. `shell` defaults to false: with cmd.exe a command path containing spaces
+ * (`process.execPath` is `C:\Program Files\nodejs\node.exe` for a normal Node install) is split on the space and
+ * fails with "'C:\Program' is not recognized". A shell is only needed to resolve npm (.cmd) — pass it explicitly.
+ */
+function run(cmd, args, cwd, { shell = false } = {}) {
+  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell, env: childEnv() });
   if (r.error) throw r.error;
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} exited with ${r.status}`);
 }
@@ -64,7 +69,7 @@ export function buildDesktop(o = {}) {
   if (!builder || !fs.existsSync(electronDist)) {
     if (o.skipInstall) throw new Error('desktop/node_modules 不完整 —— 先在 desktop/ 里跑 `npm install`');
     console.log('package-desktop: 安装 Electron 壳依赖（首次约 500 MB）…');
-    run('npm', ['install', '--no-audit', '--no-fund'], DESKTOP);
+    run('npm', ['install', '--no-audit', '--no-fund'], DESKTOP, { shell: process.platform === 'win32' });
   }
 
   const targets = desktopTargets(o);

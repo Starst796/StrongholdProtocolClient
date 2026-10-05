@@ -26,8 +26,13 @@ function childEnv() {
   return { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ''}` };
 }
 
-function run(cmd, args, cwd) {
-  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32', env: childEnv() });
+/**
+ * Spawn a child, inheriting stdio. `shell` defaults to false: with cmd.exe a command path containing spaces
+ * (`process.execPath` is `C:\Program Files\nodejs\node.exe` for a normal Node install) is split on the space and
+ * fails with "'C:\Program' is not recognized". A shell is only needed to resolve npm (.cmd) and gradlew.bat.
+ */
+function run(cmd, args, cwd, { shell = false } = {}) {
+  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell, env: childEnv() });
   if (r.error) throw r.error;
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} exited with ${r.status}`);
 }
@@ -63,7 +68,7 @@ const cli = path.join(MOBILE, 'node_modules', '@capacitor', 'cli', 'bin', 'capac
 if (!fs.existsSync(cli)) {
   if (o.skipInstall) throw new Error('mobile/node_modules 缺失 —— 先在 mobile/ 里跑 `npm install`');
   console.log('package-android: 安装 Capacitor CLI（首次）…');
-  run('npm', ['install', '--no-audit', '--no-fund'], MOBILE);
+  run('npm', ['install', '--no-audit', '--no-fund'], MOBILE, { shell: process.platform === 'win32' });
 }
 
 if (!fs.existsSync(ANDROID)) {
@@ -82,7 +87,7 @@ run(process.execPath, [cli, 'sync', 'android'], MOBILE);
 
 const task = o.release ? 'assembleRelease' : 'assembleDebug';
 console.log(`package-android: gradlew ${task}…`);
-run(process.platform === 'win32' ? 'gradlew.bat' : './gradlew', [task, '--no-daemon', '--console=plain'], ANDROID);
+run(process.platform === 'win32' ? 'gradlew.bat' : './gradlew', [task, '--no-daemon', '--console=plain'], ANDROID, { shell: process.platform === 'win32' });
 
 const apkDir = path.join(ANDROID, 'app', 'build', 'outputs', 'apk');
 const found = fs.existsSync(apkDir) ? fs.readdirSync(apkDir, { recursive: true }).filter((f) => String(f).endsWith('.apk')) : [];

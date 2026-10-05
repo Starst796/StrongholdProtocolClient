@@ -12,7 +12,8 @@
     "start": "electron .",
     "pack": "electron-builder --win --x64",
     "pack:portable": "electron-builder --win portable --x64"
-  },  "devDependencies": {
+  },
+  "devDependencies": {
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3"
   },
