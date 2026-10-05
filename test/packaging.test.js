@@ -260,8 +260,9 @@ describe('open to LAN wiring (desktop shell ↔ picker)', () => {
 
   test('the picker uses the bridge and degrades when it is absent (web / Android)', () => {
     assert.match(picker, /globalThis\.__SP_HOST__/, 'the picker reads the host bridge');
-    assert.match(picker, /host\.start\(\)/, 'the LAN panel starts the host');
+    assert.match(picker, /host\.start\(hostPortValue\(typed\)\)/, 'the LAN panel passes the typed port to the host');
     assert.match(picker, /host\.stop\(\)/, 'and can stop it');
+    assert.match(picker, /hostPortError\(typed\)/, 'the typed port is validated before the shell sees it');
     assert.match(picker, /if \(!host\) \{ el\.style\.display = 'none'/, 'the panel hides without a bridge');
   });
 

@@ -113,6 +113,9 @@ public final class MiniHostServer implements Closeable {
     private final int requestedPort;
     private final int portSearch;
 
+    /** `portSearch` value that binds only {@code requestedPort} (or 0 for the OS) and fails when it is taken. */
+    public static final int STRICT = 0;
+
     private final AtomicInteger nextId = new AtomicInteger(1);
     private final Map<Integer, Ws> conns = new ConcurrentHashMap<>();
     /** Every connection currently being served (WebSocket or static), so a stop can drop them immediately. */
@@ -124,14 +127,16 @@ public final class MiniHostServer implements Closeable {
     /**
      * @param files         payload source (assets on Android, a directory in tests)
      * @param listener      frame callbacks
-     * @param port          preferred port (SERVERS use 47822); 0 = let the OS pick
-     * @param portSearch    how many consecutive ports to try before falling back to 0
+     * @param port          preferred port (hosting uses 47822); 0 = let the OS pick
+     * @param portSearch    how many consecutive ports to try before falling back to 0; {@link #STRICT} binds only
+     *                      `port` (the player asked for that exact one — a busy port is reported, not worked around)
      */
     public MiniHostServer(StaticSource files, Listener listener, int port, int portSearch) {
         this.files = files;
         this.listener = listener;
         this.requestedPort = port;
-        this.portSearch = Math.max(1, portSearch);
+        // STRICT means "only this port": keep it as 0 rather than clamping it up to 1.
+        this.portSearch = portSearch <= STRICT ? STRICT : portSearch;
     }
 
     /** Bind and start accepting. @return the actual port */
@@ -149,7 +154,8 @@ public final class MiniHostServer implements Closeable {
                 break;
             } catch (IOException e) {
                 last = e;
-                if (p == 0) throw e;
+                // The OS-assigned candidate is the last resort; STRICT has no next candidate at all.
+                if (p == 0 || portSearch == STRICT) throw e;
             }
         }
         if (server == null) throw last != null ? last : new IOException("no port");
@@ -162,6 +168,8 @@ public final class MiniHostServer implements Closeable {
 
     private int[] candidates() {
         if (requestedPort <= 0) return new int[] { 0 };
+        // STRICT: the one port the player asked for — a busy port is reported, never swapped for another one.
+        if (portSearch == STRICT) return new int[] { requestedPort };
         List<Integer> out = new ArrayList<>();
         for (int i = 0; i < portSearch && requestedPort + i <= 65535; i++) out.add(requestedPort + i);
         out.add(0); // last resort: let the OS choose

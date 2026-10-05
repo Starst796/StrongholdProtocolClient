@@ -335,6 +335,7 @@ describe('phone host bridge in the page', { skip: GAME_ROOT ? false : 'needs a g
     const listeners = new Map();
     const sent = [];
     const closed = [];
+    const started = [];
     const plugin = {
       addListener: (event, fn) => {
         listeners.set(event, fn);
@@ -349,7 +350,10 @@ describe('phone host bridge in the page', { skip: GAME_ROOT ? false : 'needs a g
         closed.push({ id, code });
         return Promise.resolve({ ok: true });
       },
-      start: () => Promise.resolve({ active: true, port: 47822, addresses: ['192.168.1.7'], url: 'http://127.0.0.1:47822' }),
+      start: ({ port } = {}) => {
+        started.push(port);
+        return Promise.resolve({ active: true, port: port || 47822, addresses: ['192.168.1.7'], url: 'http://127.0.0.1:47822' });
+      },
       stop: () => Promise.resolve({ active: false, port: null, addresses: [], url: null }),
       status: () => Promise.resolve({ active: true, port: 47822, addresses: ['192.168.1.7'], url: 'http://127.0.0.1:47822' }),
     };
@@ -363,6 +367,21 @@ describe('phone host bridge in the page', { skip: GAME_ROOT ? false : 'needs a g
 
     const state = await globalThis.__SP_HOST__.start();
     assert.equal(state.active, true);
+    assert.deepEqual(started, [0], 'no port typed means "let the OS pick" (0)');
+
+    // A typed port is passed straight through to the native side, which binds exactly it.
+    await globalThis.__SP_HOST__.stop();
+    const chosen = await globalThis.__SP_HOST__.start(25565);
+    assert.equal(chosen.port, 25565);
+    assert.deepEqual(started, [0, 25565]);
+
+    // ...and a port the native side could not take comes back as a hint, not an exception.
+    plugin.start = ({ port } = {}) => Promise.resolve({ active: false, port: null, addresses: [], url: null, error: `端口 ${port} 已被占用，请换一个端口再试。` });
+    const busy = await globalThis.__SP_HOST__.start(25565);
+    assert.equal(busy.active, false);
+    assert.match(busy.error, /已被占用/);
+    plugin.start = ({ port } = {}) => Promise.resolve({ active: true, port: port || 47822, addresses: ['192.168.1.7'], url: 'http://127.0.0.1:47822' });
+    await globalThis.__SP_HOST__.start();
 
     // The guest connects and sends its hello in the same tick the native side reports the open — the engine still
     // has to be imported (load()), so the frame lands before any socket exists for it.

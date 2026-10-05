@@ -79,7 +79,6 @@ describe('host server helpers', () => {
 describe('host server round-trip', { skip: (HAVE_WS && GAME_ROOT) ? false : 'needs a game checkout and ws' }, () => {
   let root; // minimal payload directory
   let host = null;
-
   before(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-host-'));
     // server/**/*.js minus the Node-only / replaced files, at the same relative paths the payload uses
@@ -175,6 +174,51 @@ describe('host server round-trip', { skip: (HAVE_WS && GAME_ROOT) ? false : 'nee
       assert.ok(logs.some((l) => /created/.test(l)), 'the lobby logged through the function');
     } finally {
       await host2.close().catch(() => {});
+    }
+  });
+
+  // The picker's port field: 0 = 自动 (OS), a number = exactly that port. A busy port is reported, never worked
+  // around, because a player who types one may need it for port forwarding.
+  test('a chosen port is used exactly, and a busy one is an error instead of a silent shift', async () => {
+    const { startHost } = await import('../desktop/host-server.mjs');
+    const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+
+    // Find a free port by asking the OS, then close it so we can ask for it by number.
+    const scout = await startHost({ root, host: '127.0.0.1', port: 0, log: quiet });
+    const wanted = scout.port;
+    await scout.close();
+
+    const exact = await startHost({ root, host: '127.0.0.1', port: wanted, strict: true, log: quiet });
+    assert.equal(exact.port, wanted, 'the requested port is the port we got');
+    try {
+      // While it is taken, the same request must fail loudly (and not move to another port)...
+      await assert.rejects(
+        () => startHost({ root, host: '127.0.0.1', port: wanted, strict: true, log: quiet }),
+        (e) => e.code === 'EADDRINUSE',
+        'a busy port must reject with EADDRINUSE',
+      );
+      // ...while the internal (non-strict) path still searches for the next free one, so nothing else changed.
+      const searching = await startHost({ root, host: '127.0.0.1', port: wanted, log: quiet });
+      assert.notEqual(searching.port, wanted, 'the non-strict path moves on to a free port');
+      assert.ok(searching.port > 0);
+      await searching.close();
+    } finally {
+      await exact.close();
+    }
+
+    // The exact port is free again after close (no leaked listener), and the first request takes it back.
+    const again = await startHost({ root, host: '127.0.0.1', port: wanted, strict: true, log: quiet });
+    assert.equal(again.port, wanted);
+    await again.close();
+  });
+
+  test('port 0 means "let the OS pick" on either path', async () => {
+    const { startHost } = await import('../desktop/host-server.mjs');
+    const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+    for (const strict of [false, true]) {
+      const h = await startHost({ root, host: '127.0.0.1', port: 0, strict, log: quiet });
+      assert.ok(h.port > 0, `strict=${strict} still binds a real port`);
+      await h.close();
     }
   });
 });

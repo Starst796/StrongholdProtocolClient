@@ -188,9 +188,33 @@ function hostStatus() {
 
 function registerHostIpc() {
   ipcMain.handle('host:status', () => hostStatus());
-  ipcMain.handle('host:start', async () => {
-    if (host) return hostStatus();
-    host = await startHost({ root: WWW, log });
+  // `requested` comes from the picker's port field: 0/undefined = let the OS pick, a number = that exact port. A port
+  // it cannot have is reported back (never silently swapped for another one), so a chosen port really is the port.
+  ipcMain.handle('host:start', async (_event, requested) => {
+    const port = Number.isInteger(requested) && requested >= 0 && requested <= 65535 ? requested : 0;
+    /** The port we were hosting on, so a failed switch can put hosting back where it was. */
+    const previous = host;
+    if (previous) {
+      if (port === 0 || port === previous.port) return hostStatus();
+      host = null;
+      await previous.close().catch(() => {});
+    }
+    try {
+      host = await startHost({ root: WWW, log, port, strict: port !== 0 });
+    } catch (e) {
+      const busy = e?.code === 'EADDRINUSE';
+      log(`[host] cannot listen on ${port}: ${e?.message || e}`);
+      // The player asked for a port we cannot have: say so, and keep hosting on the old one if there was one.
+      const error = busy ? `端口 ${port} 已被占用，请换一个端口再试。` : `开启失败：${e?.message || e}`;
+      if (previous) {
+        try {
+          host = await startHost({ root: WWW, log, port: previous.port });
+        } catch (again) {
+          log(`[host] could not restore hosting on ${previous.port}: ${again?.message || again}`);
+        }
+      }
+      return { ...hostStatus(), error };
+    }
     return hostStatus();
   });
   ipcMain.handle('host:stop', async () => {

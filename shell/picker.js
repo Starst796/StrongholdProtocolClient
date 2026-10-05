@@ -27,8 +27,8 @@ import { toHttpUrl, toWsUrl } from '../net.js';
 // (this file is copied as /js/shell/picker.js, so ../../shared/constants.js is the payload's /shared/constants.js).
 import { APP_VERSION, PROTOCOL_VERSION } from '../../shared/constants.js';
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_MODE, K_SERVER, NAME_MAX,
-  PROBE_HELLO, addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA,
+  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_HOST_PORT, K_LIST, K_MODE, K_SERVER, NAME_MAX, HOST_PORT_DEFAULT,
+  PROBE_HELLO, addressError, ambiguousScheme, autostartOn, cleanName, customFrom, hostPortError, hostPortValue, isAndroidUA,
   parseProbeReply, serverName, shouldShowPicker, versionLabel, versionMismatchHint, versionVerdict,
 } from './picker-core.js';
 
@@ -282,6 +282,8 @@ const CSS = `
 .sp-pick__lanhead{font-size:13px;color:#cdd7d3}
 .sp-pick__lanhead b{color:#4ed8af}
 .sp-pick__lanbtns{display:flex;gap:8px}
+.sp-pick__lanrow{display:flex;flex:1 1 100%;align-items:center;gap:8px}
+.sp-pick__port{flex:0 0 88px;text-align:center}
 .sp-pick__lan .sp-pick__note{flex:1 1 100%}
 .sp-pick__hint{font-size:12px;color:#697571;line-height:1.6;min-height:1.2em}
 .sp-pick__menu{display:flex;flex-direction:column;gap:12px}
@@ -312,6 +314,7 @@ const CSS = `
   .sp-pick__name{font-size:13px}
   .sp-pick__addr,.sp-pick__state,.sp-pick__opt,.sp-pick__hint,.sp-pick__note{font-size:11px}
   .sp-pick__in{padding:8px 10px;font-size:12px}
+  .sp-pick__port{flex:0 0 66px}
   .sp-pick__btn{padding:8px 11px;font-size:12px}
   .sp-pick__go{padding:10px;font-size:14px}
   .sp-pick__form{padding:10px;gap:6px;border-radius:8px}
@@ -342,6 +345,8 @@ function mount() {
   const host = globalThis.__SP_HOST__;
   let hostState = { active: false, port: null, addresses: [], url: null };
   const hostAddr = (s = hostState) => (s.addresses && s.addresses[0] ? `${s.addresses[0]}:${s.port}` : `127.0.0.1:${s.port}`);
+  /** The port typed on the 创建服务器 screen: remembered, and '' means "自动" (the OS picks a free one). */
+  const readHostPort = () => readItem(K_HOST_PORT, 'localStorage') ?? String(HOST_PORT_DEFAULT);
 
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch { /* insecure context: fall back */ }
@@ -365,8 +370,10 @@ function mount() {
     if (!host) { el.style.display = 'none'; return; }
     el.style.display = '';
     if (hostState.active) {
+      // The port field was left empty → the OS picked this one, so say so (the address is still the real one).
+      const auto = readHostPort().trim() === '';
       el.innerHTML = `
-        <div class="sp-pick__lanhead">已对局域网开放 · <b>${hostAddr()}</b></div>
+        <div class="sp-pick__lanhead">已对局域网开放 · <b>${hostAddr()}</b>${auto ? '<span class="sp-pick__note">（自动分配）</span>' : ''}</div>
         <div class="sp-pick__lanbtns">
           <button class="sp-pick__btn" id="sp-lan-copy">复制地址</button>
           <button class="sp-pick__btn" id="sp-lan-enter">进入本地服务器</button>
@@ -376,8 +383,7 @@ function mount() {
       el.querySelector('#sp-lan-copy').addEventListener('click', async () => {
         const ok = await copyText(hostAddr());
         setHint(ok ? `已复制地址 ${hostAddr()}，发给同一局域网的博士即可` : `请手动输入地址：${hostAddr()}`);
-      });
-      el.querySelector('#sp-lan-stop').addEventListener('click', async () => {
+      });      el.querySelector('#sp-lan-stop').addEventListener('click', async () => {
         try { hostState = await host.stop(); } catch { /* ignore */ }
         setHint('已关闭局域网开放');
         renderLan();
@@ -393,14 +399,31 @@ function mount() {
       });
     } else {
       el.innerHTML = `
-        <button class="sp-pick__btn" id="sp-lan-start">对局域网开放</button>
-        <span class="sp-pick__note">让同一局域网的博士加入你的游戏（本机即服务器，无需另外开服）</span>`;
-      el.querySelector('#sp-lan-start').addEventListener('click', async () => {
+        <div class="sp-pick__lanrow">
+          <label class="sp-pick__opt" for="sp-lan-port">端口</label>
+          <input class="sp-pick__in sp-pick__port" id="sp-lan-port" type="text" inputmode="numeric" autocomplete="off"
+                 maxlength="5" value="${esc(readHostPort())}" placeholder="自动" />
+          <button class="sp-pick__btn" id="sp-lan-start">对局域网开放</button>
+        </div>
+        <div class="sp-pick__note">让同一局域网的博士加入你的游戏（本机即服务器，无需另外开服）。端口留空表示自动分配；填了就一定用这个端口（被占用会报错，方便做端口转发）。</div>`;
+      const portEl = el.querySelector('#sp-lan-port');
+      const start = async () => {
+        const typed = portEl.value.trim();
+        const bad = hostPortError(typed);
+        if (bad) { setHint(bad); portEl.focus(); return; }
+        writeItem(K_HOST_PORT, typed, 'localStorage'); // remembered for the next launch
         setHint('正在开启局域网服务器…');
-        try { hostState = await host.start(); setHint(''); }
-        catch (e) { setHint(`开启失败：${e?.message || e}`); }
+        try {
+          hostState = await host.start(hostPortValue(typed));
+          setHint(hostState.error || '');
+        } catch (e) {
+          // A shell that rejects instead of reporting (an older one) still gets a readable hint.
+          setHint(`开启失败：${e?.message || e}`);
+        }
         renderLan();
-      });
+      };
+      el.querySelector('#sp-lan-start').addEventListener('click', start);
+      portEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); start(); } });
     }
   }
 

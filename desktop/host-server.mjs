@@ -108,10 +108,12 @@ export function privateFirst(addresses) {
 
 /**
  * Start the host server. `root` is the payload directory (resources/www).
- * @param {{ root: string, host?: string, port?: number, log?: object }} opts
+ * @param {{ root: string, host?: string, port?: number, strict?: boolean, log?: object }} opts
+ *   `strict` binds exactly `port` (no search, no OS fallback) and throws EADDRINUSE when it is taken — what the
+ *   picker asks for once the player has typed a port (they need that exact one for port forwarding).
  * @returns {Promise<{ url: string, port: number, host: string, addresses: string[], close: () => Promise<void> }>}
  */
-export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, log = console } = {}) {
+export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, strict = false, log = console } = {}) {
   const rootAbs = path.resolve(root);
   const logger = toLogger(log);
 
@@ -187,9 +189,12 @@ export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, log 
   });
 
   // A requested port (`> 0`) is preferred, then the next ones, then an OS-assigned one; `0` means "let the OS pick".
-  const candidates = port > 0
-    ? [...Array.from({ length: PORT_SEARCH }, (_, i) => port + i).filter((p) => p <= 65535), 0]
-    : [0];
+  // `strict` skips the search entirely (the player asked for that exact port).
+  const candidates = strict
+    ? [port]
+    : port > 0
+      ? [...Array.from({ length: PORT_SEARCH }, (_, i) => port + i).filter((p) => p <= 65535), 0]
+      : [0];
   let lastErr = null;
   for (const p of candidates) {
     try {
@@ -205,6 +210,7 @@ export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, log 
     } catch (e) {
       lastErr = e;
       if (e?.code !== 'EADDRINUSE') throw e;
+      if (strict) throw e; // the port the player asked for is taken: report it instead of moving on
       if (p !== 0) logger.warn(`[host] port ${p} in use — trying ${p + 1}`);
     }
   }

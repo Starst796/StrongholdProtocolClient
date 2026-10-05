@@ -8,8 +8,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX, PROBE_HELLO,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA,
+  BUILTIN_SERVERS, CLIENT_PAGE_PORT, HOST_PORT_DEFAULT, K_AUTOSTART, K_CHOSEN, K_HOST_PORT, K_LIST, K_SERVER, NAME_MAX, PROBE_HELLO,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, hostPortError, hostPortValue, isAndroidUA,
   parseProbeReply, serverName, shouldShowPicker, versionLabel, versionMismatchHint, versionVerdict,
 } from '../shell/picker-core.js';
 
@@ -115,7 +115,45 @@ describe('server addresses', () => {
   });
 
   test('storage keys are namespaced under sp.shell.* so they never collide with the game"s own keys', () => {
-    for (const k of [K_SERVER, K_AUTOSTART, K_LIST, K_CHOSEN]) assert.match(k, /^sp\.shell\./);
+    for (const k of [K_SERVER, K_AUTOSTART, K_LIST, K_CHOSEN, K_HOST_PORT]) assert.match(k, /^sp\.shell\./);
+  });
+});
+
+describe('the 创建服务器 port', () => {
+  test('an empty field means 自动, and that is what the shell is asked for', () => {
+    assert.equal(hostPortError(''), null);
+    assert.equal(hostPortError('   '), null);
+    assert.equal(hostPortError(null), null);
+    assert.equal(hostPortValue(''), 0, '0 tells the shell "let the OS pick"');
+    assert.equal(hostPortValue(null), 0);
+  });
+
+  test('the default is the port both shells host on', () => {
+    assert.equal(HOST_PORT_DEFAULT, 47822);
+    assert.equal(hostPortError(String(HOST_PORT_DEFAULT)), null);
+    assert.equal(hostPortValue(String(HOST_PORT_DEFAULT)), HOST_PORT_DEFAULT);
+    // the desktop client's own page server: picking it would collide with the client itself
+    assert.equal(CLIENT_PAGE_PORT, 47821);
+  });
+
+  test('a typed port is accepted exactly as typed', () => {
+    for (const p of ['1', '80', '25565', '47822', '65535']) {
+      assert.equal(hostPortError(p), null, `${p} is valid`);
+      assert.equal(hostPortValue(p), Number(p));
+    }
+    // a remembered value with stray whitespace still works (the field is free text)
+    assert.equal(hostPortValue(' 25565 '), 25565);
+  });
+
+  test('what is not a port is refused with a reason, and never reaches the shell', () => {
+    for (const bad of ['abc', '12a', '65536', '0', '-1', '1.5', '999999']) {
+      assert.ok(hostPortError(bad), `${bad} must be refused`);
+      assert.equal(hostPortValue(bad), 0, `${bad} falls back to 自动 rather than a bogus bind`);
+    }
+    assert.match(hostPortError('65536'), /1–65535/);
+    assert.match(hostPortError('abc'), /数字/);
+    // the client's own page port gets its own explanation (otherwise a player just sees "in use")
+    assert.match(hostPortError(String(CLIENT_PAGE_PORT)), /客户端自己/);
   });
 });
 

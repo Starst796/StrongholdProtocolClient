@@ -115,12 +115,15 @@
     port: typeof res?.port === 'number' ? res.port : null,
     addresses: Array.isArray(res?.addresses) ? res.addresses : [],
     url: typeof res?.url === 'string' ? res.url : null,
+    // A port the player asked for that the phone could not take (busy): shown as a hint, not an exception.
+    ...(typeof res?.error === 'string' ? { error: res.error } : {}),
   });
 
   globalThis.__SP_HOST__ = {
-    async start() {
+    /** @param {number} [port] 0/omitted = let the OS pick; otherwise that exact port (a busy one is reported) */
+    async start(port) {
       await ready();
-      return toState(await plugin.start());
+      return toState(await plugin.start({ port: Number.isInteger(port) && port >= 0 ? port : 0 }));
     },
     async stop() {
       // End the sessions before the port closes, so the game sees a clean disconnect rather than dead sockets.
@@ -132,5 +135,4 @@
     async status() {
       return toState(await plugin.status());
     },
-  };
-})();
+  };})();

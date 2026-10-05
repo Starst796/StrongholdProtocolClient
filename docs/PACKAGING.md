@@ -184,7 +184,7 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
                               <──send()/ping()/closeConn()──         <── 大厅的回复 ──<── Lobby / Match
 ```
 
-- **一个端口两个用途**：`MiniHostServer` 在同一端口上做 WebSocket（`/ws`，含握手 / 分片 / ping-pong / 二进制拒绝 / close 回应）与静态托管（`GET`/`HEAD`、MIME 表、拒绝路径穿越和点文件、`/js/runtime-config.js` 换成"在本机 origin 玩、跳过选择页"的访客版）。端口沿用桌面的 `47822`，被占则顺延 16 个，再不行交给系统。响应按 HTTP/1.1 收尾：能拿到长度就 `Content-Length`，拿不到（APK 里压缩存储的资源）就用 `Transfer-Encoding: chunked`——**不再靠"关连接"表示结束**（那会让部分客户端，例如 Node 的 `fetch`，在连接复用时出错），连接也能继续复用。
+- **一个端口两个用途**：`MiniHostServer` 在同一端口上做 WebSocket（`/ws`，含握手 / 分片 / ping-pong / 二进制拒绝 / close 回应）与静态托管（`GET`/`HEAD`、MIME 表、拒绝路径穿越和点文件、`/js/runtime-config.js` 换成"在本机 origin 玩、跳过选择页"的访客版）。**端口由玩家决定**：留空（`port = 0`）交给系统分配，填了就是那个端口——`MiniHostServer.STRICT` 让绑定只试这一个，被占用直接报错，不做顺延（桌面 `startHost({ strict: true })` 同义）；选择页会把端口存进 `sp.shell.hostPort`，两端都会照它启动。响应按 HTTP/1.1 收尾：能拿到长度就 `Content-Length`，拿不到（APK 里压缩存储的资源）就用 `Transfer-Encoding: chunked`——**不再靠"关连接"表示结束**（那会让部分客户端，例如 Node 的 `fetch`，在连接复用时出错），连接也能继续复用。
 - **不占额外存储**：静态文件由 `AssetStaticSource` 用 `AssetManager` 直接从 APK 里读。访客看的是 WebView 自己跑的那份文件。
 - **必须是经典脚本**：`/offline/host-mobile.js` 用 `<script src=...>` 加载（不是 `type="module"`），因为它必须在 `/js/shell/picker.js` 之前定义 `window.__SP_HOST__`。模块脚本都是 deferred 的，而且**前一个模块的依赖图还在加载时并不会挡住后面的模块**——真机上量到 picker 比它早约 140 ms 执行，于是「创建服务器」入口根本没渲染出来。经典脚本在解析时就跑，先于所有模块，和桌面版 preload 的保证一致；代价是它不能写静态 `import`，所以引擎模块改成按需 `import()`（顺带让不开服的人不用加载 `server/net.js`、`lobby.js`）。
 - **桥的协议**（`HostServerPlugin.java` ↔ `offline/host-mobile.js`）：原生 → 页面是 `open`/`frame`/`pong`/`close` 事件（带 socket id），页面 → 原生是 `send`/`ping`/`closeConn`/`closeAll`；`start`/`stop`/`status` 的返回值就是桌面版 `window.__SP_HOST__` 的形状（所以选择页一行都不用改）。侦听器回调在连接线程上，`notifyListeners` 前统一 `executeOnMainThread`。
@@ -237,7 +237,7 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | 行为 | 说明 |
 |---|---|
 | 主页 | **单人游戏**（完全离线：把服务器跑在页面里）、**创建服务器**（客户端自己开服并对局域网开放：桌面版与 Android）、**加入服务器** |
-| 创建服务器页 | **对局域网开放** / **关闭**，显示 `局域网IP:端口`、**复制地址**、**进入本地服务器**（把本机客户端指向这台服务器）。开放后同一端口同时托管静态页面与 `/ws`，同伴既能用**浏览器**打开 `http://<IP>:<端口>` 直接玩，也能用自己的客户端「加入服务器」填该地址。桌面版跑在 Electron 主进程（`desktop/host-server.mjs`），Android 跑在原生 Java 侧 + WebView 页内引擎（`host/MiniHostServer.java` + `offline/host-mobile.js`，见 §5）。网页版无此入口（浏览器不能监听端口） |
+| 创建服务器页 | **端口**输入框（留空 = 自动分配，默认 `47822`，会记住；填了就用那个端口，被占用报错让你改）+ **对局域网开放** / **关闭**，显示 `局域网IP:端口`、**复制地址**、**进入本地服务器**（把本机客户端指向这台服务器）。开放后同一端口同时托管静态页面与 `/ws`，同伴既能用**浏览器**打开 `http://<IP>:<端口>` 直接玩，也能用自己的客户端「加入服务器」填该地址。桌面版跑在 Electron 主进程（`desktop/host-server.mjs`，`strict: true` 时不顺延端口），Android 跑在原生 Java 侧 + WebView 页内引擎（`host/MiniHostServer.java` 的 `STRICT` + `offline/host-mobile.js`，见 §5）。网页版无此入口（浏览器不能监听端口） |
 | 加入服务器页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，连上后不保存进列表）、**编辑**（改选中的自建服务器；内置与打包默认服不可改）、**刷新**（重新测一遍所有延迟，放在"返回"左边）、**返回** |
 | 地址写法 | `host`、`host:port`、`http(s)://…`、`ws(s)://…`，不用手写协议：不带协议时带端口的按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的协议不通会自动换另一种再试，命中后把那个地址存进 `sp.shell.server`（`shell/picker-core.js` 的 `ambiguousScheme` 决定哪些地址需要双协议探测） |
 | 列出的服务器 | 内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包指定的地址会标"默认"；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
@@ -298,7 +298,8 @@ node scripts/notice.mjs --clear        # 撤回
 | 选择页每次启动都出现 / 想换服务器 | 桌面按 **F2**（或 `--choose-server`），取消勾选"记住并直接进入"；Android 每次都会问 |
 | 重启后要重新登录 / 干员调配、设置被清空 | 旧版本客户端每次启动都换随机端口（换了源，`localStorage` 读不回来）：重新 `npm run client:desktop` 生成固定 `DEFAULT_PORT`（47821）的客户端，见 §4.4 |
 | Android 上局域网地址连不上 | 先确认 APK 是打开 `allowMixedContent` 打的（§5）；地址用 `192.168.x.x:3000` 这种形式，手机与服务器要在同一个 Wi-Fi |
-| Android 上「对局域网开放」后别人连不上 | 手机与同伴要在同一个 Wi-Fi，且路由器没有开"客户端隔离"（AP isolation）；先在同一台手机上用浏览器打开 `http://127.0.0.1:<端口>` 确认服务器本身活着，再换 `http://<手机IP>:<端口>` 试（§5）。端口被占时会顺延，界面上显示的就是真实端口 |
+| Android 上「对局域网开放」后别人连不上 | 手机与同伴要在同一个 Wi-Fi，且路由器没有开"客户端隔离"（AP isolation）；先在同一台手机上用浏览器打开 `http://127.0.0.1:<端口>` 确认服务器本身活着，再换 `http://<手机IP>:<端口>` 试（§5）。端口留空时由系统分配，界面上显示的就是真实端口 |
+| 「端口 X 已被占用，请换一个端口」 | 这是故意的：填了端口就保证用那个端口（做端口转发时才有意义），不会偷偷换。换一个，或把端口框清空让系统自动分配。桌面端 `47821` 是客户端自己页面的端口，填了会被直接拦下 |
 | 报 `DATA_SHIM_JS changed upstream` / `SIM_PRIVATE is now […]` | 游戏仓库那两处变了：同步 `tools/game-contract.mjs` |
 | 打包后的客户端里图片 / 音频 404 | 游戏仓库的 `public/assets` 不完整：在那边 `npm run assets` |
 | 连不上服务器 | 先确认服务器活着：`curl http://localhost:3000/healthz`；再用 `--server 127.0.0.1:3000` 指向本地 `npm start` 排除客户端问题。远程服务器同理，换成对应地址 |

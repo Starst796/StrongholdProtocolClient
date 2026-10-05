@@ -28,9 +28,6 @@ import java.io.IOException;
 @CapacitorPlugin(name = "HostServer")
 public class HostServerPlugin extends Plugin {
 
-    /** The port the desktop host prefers too, so both builds behave the same. */
-    private static final int HOST_PORT = 47822;
-    /** Consecutive ports tried when the preferred one is taken (e.g. a socket of ours still in TIME_WAIT). */
     private static final int PORT_SEARCH = 16;
 
     private MiniHostServer server;
@@ -41,24 +38,37 @@ public class HostServerPlugin extends Plugin {
         super.handleOnDestroy();
     }
 
-    /** Open the LAN listener. Binding and the first asset lookups run off the main thread (ANR-safe). */
+    /**
+     * Open the LAN listener. `port` comes from the picker's port field: 0/absent = let the OS pick, a number = that
+     * exact port (a busy one is reported back, never silently swapped — the player may need it for port forwarding).
+     * Binding and the first asset lookups run off the main thread (ANR-safe).
+     */
     @PluginMethod
     public void start(PluginCall call) {
         if (server != null && server.isRunning()) {
             call.resolve(status());
             return;
         }
+        Integer requested = call.getInt("port");
+        int port = requested != null && requested >= 0 && requested <= 65535 ? requested : 0;
+        boolean strict = port != 0;
         getBridge().execute(() -> {
             try {
                 AssetManager assets = getContext().getAssets();
                 MiniHostServer started = new MiniHostServer(
-                    new AssetStaticSource(assets, "public"), listener(), HOST_PORT, PORT_SEARCH);
+                    new AssetStaticSource(assets, "public"), listener(), port, strict ? MiniHostServer.STRICT : PORT_SEARCH);
                 started.start();
                 server = started;
                 JSObject result = status();
                 getBridge().executeOnMainThread(() -> call.resolve(result));
             } catch (IOException e) {
-                getBridge().executeOnMainThread(() -> call.reject("无法开启服务器：" + e.getMessage(), e));
+                getBridge().executeOnMainThread(() -> {
+                    JSObject out = status();
+                    out.put("error", strict
+                        ? "端口 " + port + " 已被占用，请换一个端口再试。"
+                        : "无法开启服务器：" + e.getMessage());
+                    call.resolve(out);
+                });
             }
         });
     }

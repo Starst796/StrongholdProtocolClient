@@ -8,9 +8,44 @@ export const K_AUTOSTART = 'sp.shell.autostart'; // '1' = skip the picker next l
 export const K_LIST = 'sp.shell.list';           // user-added servers: JSON [{ name, address }]
 export const K_CHOSEN = 'sp.shell.chosen';       // sessionStorage: already entered once in this session
 export const K_MODE = 'sp.shell.mode';           // 'solo' = in-page single-player server, 'multi' = a real server
+export const K_HOST_PORT = 'sp.shell.hostPort';  // port 创建服务器 listens on ('' / absent = let the OS pick)
 
 /** Longest stored server name (the picker's "add server" field is capped to this). */
 export const NAME_MAX = 32;
+
+/** Port 创建服务器 uses when the player keeps the default (the desktop shell's static page server is 47821). */
+export const HOST_PORT_DEFAULT = 47822;
+
+/** Ports the client itself binds (the page server / the host default) — worth naming in a port error. */
+export const CLIENT_PAGE_PORT = 47821;
+
+/**
+ * Validate the port typed on the 创建服务器 screen. An empty value means "自动" (the OS picks a free port), which is
+ * what the field starts as on a fresh install.
+ * @param {string|number|null|undefined} raw
+ * @returns {string|null} the reason to show, or null when acceptable
+ */
+export function hostPortError(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null; // 自动
+  if (!/^\d{1,5}$/.test(s)) return '端口只能是数字（1–65535），留空表示自动分配。';
+  const n = Number(s);
+  if (n < 1 || n > 65535) return '端口要在 1–65535 之间（留空表示自动分配）。';
+  if (n === CLIENT_PAGE_PORT) return `端口 ${CLIENT_PAGE_PORT} 被客户端自己的页面占用，请换一个。`;
+  return null;
+}
+
+/**
+ * The port to hand to the shell: 0 means "let the OS pick" (the field was left empty).
+ * @param {string|number|null|undefined} raw
+ * @returns {number}
+ */
+export function hostPortValue(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return 0;
+  const n = Number(s);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0;
+}
 
 /**
  * The built-in entry: a server the player runs themselves (`npm start` in the game repo). The official remote
