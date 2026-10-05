@@ -149,7 +149,7 @@ index 9e3afb2..0565a0d 100644
  import { toast, toastError } from '../ui/toasts.js';
  import { GuideButton } from '../ui/guide.js';
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index b14cb98..15caba2 100644
+index 23c9c57..b1d2c56 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
 @@ -19,7 +19,7 @@ import { toast, toastError } from '../ui/toasts.js';
