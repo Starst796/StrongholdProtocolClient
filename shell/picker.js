@@ -707,12 +707,16 @@ function mount() {
     if (hintEl) hintEl.textContent = hintText;
   }
 
-  // Esc: close the form, then step back to the mode menu.
-  root.addEventListener('keydown', (ev) => {
+  // Esc: close the form, then step back to the mode menu, then (once at the menu) leave the picker entirely — so an
+  // F2 picker opened over a running game/page is dismissed with Esc. Bound on document, not root: the picker does not
+  // hold keyboard focus (the game underneath does), so a root-level listener would never fire.
+  const onKeyDown = (ev) => {
     if (ev.key !== 'Escape') return;
     if (form) { form = null; editingKey = null; setHint(''); renderForm(); }
     else if (screen !== 'home') { screen = 'home'; setHint(''); layout(); }
-  });
+    else hidePicker();
+  };
+  document.addEventListener('keydown', onKeyDown);
 
   // The game boots underneath this overlay: hide its boot screen so nothing flashes through.
   const boot = document.getElementById('boot');
@@ -723,6 +727,7 @@ function mount() {
   return {
     root,
     destroy() {
+      document.removeEventListener('keydown', onKeyDown);
       if (boot) boot.style.visibility = bootVisibility || '';
       root.remove();
       style.remove();

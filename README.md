@@ -3,7 +3,7 @@
 把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有三条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**创建服务器**（仅桌面版）让**客户端自己当服务器**并对局域网开放；**加入服务器**则连到别处的服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
-本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
+本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端需要的改动（含个别上游小 bug 的修复）以补丁形式打在 payload 上（见下）。
 
 ```
 npm run release             # 一键发布：对齐上游版本号 → 跑测试 → 打 exe(+zip) 与 apk → git 提交（入口 package.bat / package.sh）
@@ -37,7 +37,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/package-client.mjs` | 把游戏仓库的挂载点摊平成 `build/client/www`，生成 `data.js` / `js/runtime-config.js` / `js/shell/*` / `css/shell-display.css` / `build.json`，并应用 payload 补丁 |
 | `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
-| `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk，见下），`git diff` 生成 |
+| `patches/game-client.patch` | 客户端改动（4 个文件、7 个 hunk，见下），`git diff` 生成 |
 | `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 创建服务器（仅桌面版）/ 加入服务器"；「创建服务器」页可对局域网开放，`加入服务器`页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；探测时顺带用一个 `version: 0` 的 `hello` 读出服务器的协议版本（`PROTOCOL_VERSION`），**协议不同的服务器标记为不兼容并拒绝进入**；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
@@ -50,8 +50,8 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 ## 与游戏仓库的契约（重要）
 
 - **游戏仓库只读**：`git status` 永远干净，`git pull` 不会因为打包而冲突。客户端的改动是补丁：
-  `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）。
-- 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。补丁**不要手改**：客户端改动以「锚定字符串替换」写在 [tools/regen-patch.mjs](tools/regen-patch.mjs)（大段替换体在 [tools/patch-hooks/](tools/patch-hooks/)），跑 `npm run patch:regen` 重新生成即可；[npm test](test/packaging.test.js) 里有一条契约用例会在补丁过期时报错（`patch:check` 同义，可接 CI）。锚点若被上游改写，regen 会明确报出是哪个锚点没找到。
+  `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`js/screens/lobby.js`（补上观战出错分支漏引的 `ERR`——上游 bug，`ERR is not defined`）、`index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）。
+- 上游改了这 4 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。补丁**不要手改**：客户端改动以「锚定字符串替换」写在 [tools/regen-patch.mjs](tools/regen-patch.mjs)（大段替换体在 [tools/patch-hooks/](tools/patch-hooks/)），跑 `npm run patch:regen` 重新生成即可；[npm test](test/packaging.test.js) 里有一条契约用例会在补丁过期时报错（`patch:check` 同义，可接 CI）。锚点若被上游改写，regen 会明确报出是哪个锚点没找到。
 - `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照 `server/index.js` 校验。
 - 产物里记录构建来源：payload 的 `build.json` 与 `build/client/manifest.json` 都有 `git describe` + commit + `PROTOCOL_VERSION`。
 
@@ -117,7 +117,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 - **加入服务器页**：服务器列表 + **添加服务器**（填名称与地址）、**直接连接**（只填地址，连上后不进列表）、**编辑**（改选中的自建服务器；内置的"本机 / 局域网"与打包默认服不可改）、**刷新**（把所有服务器重新测一遍延迟）与"返回"。
 - **列出的服务器**：内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包时指定的地址会作为"默认服务器"列出；再加上自己添加的服务器（存在客户端本地，旧的"只存地址"格式会自动升级成"名称 + 地址"）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
 - **地址怎么写**：`host`、`host:port`、`http(s)://…`、`ws(s)://…` 都行，**不用手写协议**——不带协议时，带端口的地址先按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的那个连不上就自动换另一种协议再试，哪个通用哪个，并把那个地址记下来。所以公网 IP + 端口（如 `211.71.60.138:3000`）能直接填。
-- **记住上次选择**：桌面端勾上"记住并直接进入"后，下次启动直接进游戏（想换服务器按 **F2**，或用 `--choose-server` 启动）。Android 没有 F2，所以每次都显示这个页面（默认不记住），免得换了服务器回不去。
+- **记住上次选择**：桌面端勾上"记住并直接进入"后，下次启动直接进游戏（想换服务器按 **F2**，或用 `--choose-server` 启动）。选择页里按 **Esc** 逐级返回（表单 → 模式菜单），在模式菜单再按 **Esc** 直接关闭选择页回到游戏（对局中按 F2 打开后可用 Esc 退出）。Android 没有 F2，所以每次都显示这个页面（默认不记住），免得换了服务器回不去。
 - **创建服务器（仅桌面版）**：主页中间的「创建服务器」进去后点「对局域网开放」——**客户端自己就是服务器**（`desktop/host-server.mjs` 在 Electron 主进程里跑真实的 `server/net.js` + `lobby.js` + `match/`，绑 `0.0.0.0`）。页面会显示 `你的局域网IP:端口`（默认 `47822`，被占则顺延）与「复制地址」「进入本地服务器」「关闭」。**同伴两种加入方式**：①用**浏览器直接打开 `http://你的IP:端口`**（host 在同一端口托管整套游戏，打开即玩，无需装客户端）；②用自己的客户端走**加入服务器 → 添加服务器**填这个地址（也能用 `/ws` 探测到延迟）。网页版 / Android 没有这个入口（浏览器不能监听端口）。详见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 - **网页版不受影响**：浏览器版没有这个页面，服务器永远是自己所在的站点。
 - **重启后不丢本地缓存**：身份 token、干员调配、设置都存在 `localStorage` 里，而它是按"源"隔离的——所以桌面壳固定用 `127.0.0.1:47821`（`desktop/serve.mjs` 的 `DEFAULT_PORT`），每次启动都是同一个源，重启后原样读回（以前每次随机端口 = 每次换源，等于重装）。Android 本来就从固定的 `https://localhost` 提供页面，无需处理。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.4。

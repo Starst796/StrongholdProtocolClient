@@ -49,6 +49,7 @@ function makeGameFixture() {
   write(root, 'public/index.html', '<html>\n<script type="module" src="/js/main.js"></script>\n</html>\n');
   write(root, 'public/js/net.js', "// net\n/** WebSocket URL. */\nexport function defaultWsUrl() { return 'ws://x/ws'; }\n");
   write(root, 'public/js/screens/room.js', '// room\n/** Invite link. */\nexport function inviteLink(code) { return `?room=${code}`; }\n');
+  write(root, 'public/js/screens/lobby.js', '// lobby\nimport { A } from "../../../shared/constants.js";\nexport const L = 1;\n');
   write(root, 'public/js/main.js', 'export {};\n');
   write(root, 'public/assets/char/x.png', 'png');
   // data/, shared/, server/
@@ -94,6 +95,14 @@ function makeGameFixture() {
     '+// patched: invite links use toHttpUrl()',
     ' /** Invite link. */',
     ' export function inviteLink(code) { return `?room=${code}`; }',
+    'diff --git a/public/js/screens/lobby.js b/public/js/screens/lobby.js',
+    '--- a/public/js/screens/lobby.js',
+    '+++ b/public/js/screens/lobby.js',
+    '@@ -1,3 +1,3 @@',
+    ' // lobby',
+    '-import { A } from "../../../shared/constants.js";',
+    '+import { ERR, A } from "../../../shared/constants.js";',
+    ' export const L = 1;',
     '',
   ].join('\n'));
   return { root, patchFile };
@@ -102,9 +111,10 @@ function makeGameFixture() {
 describe('unified diff applier', () => {
   test('parses files and hunks', () => {
     const files = parsePatch(readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8'));
-    assert.equal(files.length, 3);
+    assert.equal(files.length, PATCHED_FILES.length);
     assert.deepEqual(files.map((f) => stripPath(f.newPath, 2)).sort(), [...PATCHED_FILES].sort());
-    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 6);
+    // index.html 2 + net.js 2 + room.js 2 + lobby.js 1
+    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 7);
   });
 
   test('applies a patch, and refuses to apply it where the context no longer matches', () => {
@@ -256,8 +266,20 @@ describe('open to LAN wiring (desktop shell ↔ picker)', () => {
     assert.match(picker, /const hostButton = host\s*\n?\s*\?/, 'the host entry is desktop-only');
     assert.match(picker, /screen === 'host' \? HOST_HTML : MULTI_HTML/, 'the host screen exists');
     assert.match(picker, /id="sp-lan"/, 'the LAN panel lives on the host screen');
-    // Escape returns to the mode menu from any sub-screen
+    // Escape returns to the mode menu from any sub-screen, then leaves the picker (F2 over a running game)
     assert.match(picker, /else if \(screen !== 'home'\) \{ screen = 'home'/);
+    assert.match(picker, /else hidePicker\(\);/);
+    // the listener must be on document (the picker never holds focus), and be removed on destroy
+    assert.match(picker, /document\.addEventListener\('keydown', onKeyDown\)/);
+    assert.match(picker, /document\.removeEventListener\('keydown', onKeyDown\)/);
+    assert.ok(!/root\.addEventListener\('keydown'/.test(picker), 'a root-level listener would never fire');
+  });
+
+  test('the payload patch fixes upstream lobby.js (spectator ERR import)', () => {
+    const patch = read('patches/game-client.patch');
+    assert.match(patch, /diff --git a\/public\/js\/screens\/lobby\.js/);
+    assert.match(patch, /^\+import \{ ERR,/m, 'the ERR import is added');
+    assert.ok(PATCHED_FILES.includes('js/screens/lobby.js'));
   });
 
   test('a LAN guest skips the picker and stays on its own origin', () => {

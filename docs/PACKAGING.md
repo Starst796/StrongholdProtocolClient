@@ -223,6 +223,7 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | 列出的服务器 | 内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包指定的地址会标"默认"；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
 | 探测 | 直接开一条 `/ws` 连接（和游戏同一条通道，因此不依赖服务器 CORS），失败重试一次；绿点 = 真的能连进去。若服务器给 `/healthz` 加了 `Access-Control-Allow-Origin`，还会显示 `v<app> · 在线 n · 房间 n`（不加只是少一行信息，控制台会有一条 CORS 报错，页面已忽略） |
 | 记住上次 | 桌面端勾"记住并直接进入"后下次直接进游戏；想换服务器按 **F2**，或用 `--choose-server` 启动。Android 没有 F2，所以每次都显示、默认不记住（否则玩家换了服务器就回不去了） |
+| 返回 | 页内 **Esc**：表单 → 模式菜单 →（再按一次）关闭选择页。对局中按 F2 打开选择页后，Esc 可直接退出回到游戏。监听挂在 document 上（选择页不持有键盘焦点） |
 | 优先级 | `--server <地址>`（本次运行）> `?server=<地址>` > 菜单记住的地址 > 打包默认地址 |
 | 网页版 | 没有这个页面（浏览器版的服务器永远是自己所在的站点） |
 
@@ -256,7 +257,7 @@ node scripts/notice.mjs --clear        # 撤回
 |---|---|
 | `client.config.json` | `gameRoot`（默认 `../Stronghold-Protocol`）与 `defaultServer` |
 | `tools/game-contract.mjs` | 复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（这样构建不需要在游戏仓库里 `npm install`）；每次构建都对照 `server/index.js` 校验，不一致直接报错 |
-| `patches/game-client.patch` | 打在 payload 上的客户端改动（3 个文件、6 个 hunk，§1.2、§6）。它是 `git diff` 出来的普通补丁，由 `tools/unified-diff.mjs` 应用（不依赖 git）；**上游改了这个文件里的任一文件 → 补丁对不上 → 构建失败**，此时需要重新生成补丁 |
+| `patches/game-client.patch` | 打在 payload 上的客户端改动（4 个文件、7 个 hunk，§1.2、§6），含一处上游小 bug 修复（`js/screens/lobby.js` 补 `ERR` 导入）。它是 `git diff` 出来的普通补丁，由 `tools/unified-diff.mjs` 应用（不依赖 git）；**上游改了这个文件里的任一文件 → 补丁对不上 → 构建失败**，此时用 `node tools/regen-patch.mjs` 重新生成 |
 | `build/client/manifest.json`、payload 里的 `build.json` | 记录这次构建基于的游戏版本：`git describe` + commit + `PROTOCOL_VERSION` |
 
 | | 打包进去什么 |
