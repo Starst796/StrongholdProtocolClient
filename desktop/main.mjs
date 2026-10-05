@@ -23,8 +23,9 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
-import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
 import { createStaticServer, DEFAULT_PORT } from './serve.mjs';
+import { startHost } from './host-server.mjs';
 import { describeCertificate, fingerprintOf, hostKey, isTrusted, loadTrusted, remember, saveTrusted, shortFingerprint } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -172,8 +173,35 @@ function registerShortcuts(wc) {
   });
 }
 
+// --- open to LAN (integrated host server) ---------------------------------------------------------
+// The packaged client can host: desktop/host-server.mjs runs the real game server in this (Node) process and answers
+// LAN WebSocket connections. It is off until the player opens it from the picker; the address is shared then.
+/** @type {{ close: () => Promise<void>, port: number, addresses: string[], url: string } | null} */
+let host = null;
+
+/** The status the picker's LAN panel renders. */
+function hostStatus() {
+  return host
+    ? { active: true, port: host.port, addresses: host.addresses, url: host.url }
+    : { active: false, port: null, addresses: [], url: null };
+}
+
+function registerHostIpc() {
+  ipcMain.handle('host:status', () => hostStatus());
+  ipcMain.handle('host:start', async () => {
+    if (host) return hostStatus();
+    host = await startHost({ root: WWW, log });
+    return hostStatus();
+  });
+  ipcMain.handle('host:stop', async () => {
+    if (host) { const h = host; host = null; await h.close().catch(() => {}); }
+    return hostStatus();
+  });
+}
+
 async function main() {
   buildMenu();
+  registerHostIpc();
   if (insecureTls) log('[client] --insecure-tls: certificate verification is OFF for this run (self-signed servers)');
 
   if (!existsSync(path.join(WWW, 'index.html'))) {
@@ -200,7 +228,11 @@ async function main() {
     autoHideMenuBar: true,
     fullscreen: startFullscreen,
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: false },
+    webPreferences: {
+      contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: false,
+      // Exposes the "open to LAN" controls (window.__SP_HOST__) to the picker; a narrow contextBridge surface.
+      preload: path.join(HERE, 'preload.cjs'),
+    },
   });
   registerShortcuts(win.webContents);
   win.once('ready-to-show', () => win.show());
@@ -239,7 +271,10 @@ async function main() {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('quit', () => { served.close().catch(() => {}); });
+  app.on('quit', () => {
+    served.close().catch(() => {});
+    if (host) { const h = host; host = null; h.close().catch(() => {}); }
+  });
 }
 
 app.whenReady().then(main, (err) => {

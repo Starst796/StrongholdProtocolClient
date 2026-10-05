@@ -226,6 +226,55 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
   });
 });
 
+describe('open to LAN wiring (desktop shell ↔ picker)', () => {
+  const read = (rel) => readFileSync(path.join(ROOT, rel), 'utf8');
+  const main = read('desktop/main.mjs');
+  const preload = read('desktop/preload.cjs');
+  const picker = read('shell/picker.js');
+
+  test('the preload bridge and the main handlers agree on the IPC channels', () => {
+    for (const ch of ['host:start', 'host:stop', 'host:status']) {
+      assert.ok(preload.includes(`'${ch}'`), `preload.cjs must invoke ${ch}`);
+      assert.ok(main.includes(`ipcMain.handle('${ch}'`), `main.mjs must handle ${ch}`);
+    }
+    // the window must actually load the preload, or window.__SP_HOST__ never appears
+    assert.match(main, /preload:\s*path\.join\(HERE, 'preload\.cjs'\)/);
+  });
+
+  test('the picker uses the bridge and degrades when it is absent (web / Android)', () => {
+    assert.match(picker, /globalThis\.__SP_HOST__/, 'the picker reads the host bridge');
+    assert.match(picker, /host\.start\(\)/, 'the LAN panel starts the host');
+    assert.match(picker, /host\.stop\(\)/, 'and can stop it');
+    assert.match(picker, /if \(!host\) \{ el\.style\.display = 'none'/, 'the panel hides without a bridge');
+  });
+
+  test('the home menu is 单人游戏 / 创建服务器 / 加入服务器', () => {
+    // 单人游戏 and 加入服务器 are always present; 创建服务器 is injected only when the shell exposes the bridge.
+    assert.match(picker, /id="sp-solo"/);
+    assert.match(picker, /id="sp-join"/);
+    assert.match(picker, /id="sp-host"/);
+    assert.match(picker, /const hostButton = host\s*\n?\s*\?/, 'the host entry is desktop-only');
+    assert.match(picker, /screen === 'host' \? HOST_HTML : MULTI_HTML/, 'the host screen exists');
+    assert.match(picker, /id="sp-lan"/, 'the LAN panel lives on the host screen');
+    // Escape returns to the mode menu from any sub-screen
+    assert.match(picker, /else if \(screen !== 'home'\) \{ screen = 'home'/);
+  });
+
+  test('a LAN guest skips the picker and stays on its own origin', () => {
+    assert.match(picker, /globalThis\.__SP_LAN_CLIENT__/, 'the picker reads the LAN-guest flag');
+    assert.match(picker, /const savedAddress = lanClient \? null :/, 'a remembered server must not hijack a guest');
+    assert.match(picker, /if \(!lanClient && shouldShowPicker/, 'a guest never sees the picker');
+    // the host serves the guest its own runtime-config (host.test.js covers the response body)
+    assert.match(read('desktop/host-server.mjs'), /__SP_LAN_CLIENT__ = true/);
+  });
+
+  test('the desktop shell ships the host files and the ws dependency', () => {
+    const pkg = JSON.parse(read('desktop/package.json'));
+    for (const f of ['host-server.mjs', 'preload.cjs']) assert.ok(pkg.build.files.includes(f), `${f} must ship in the app`);
+    assert.ok(pkg.dependencies && pkg.dependencies.ws, 'ws is a runtime dependency of the shell');
+  });
+});
+
 describe('shell picker latency probe', () => {
   // In single-player the offline layer replaces globalThis.WebSocket with the in-page loopback; probing through it
   // made every listed server report "可连接 · 0ms" (and 刷新 could not tell them apart). The picker must keep the

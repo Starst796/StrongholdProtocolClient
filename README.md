@@ -1,6 +1,6 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有两条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**多人游戏**仍走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有三条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**创建服务器**（仅桌面版）让**客户端自己当服务器**并对局域网开放；**加入服务器**则连到别处的服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
@@ -38,7 +38,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
 | `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk，见下），`git diff` 生成 |
-| `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 多人游戏"，多人页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；探测时顺带用一个 `version: 0` 的 `hello` 读出服务器的协议版本（`PROTOCOL_VERSION`），**协议不同的服务器标记为不兼容并拒绝进入**；`picker-core.js` 是纯逻辑（可单测） |
+| `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 创建服务器（仅桌面版）/ 加入服务器"；「创建服务器」页可对局域网开放，`加入服务器`页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；探测时顺带用一个 `version: 0` 的 `hello` 读出服务器的协议版本（`PROTOCOL_VERSION`），**协议不同的服务器标记为不兼容并拒绝进入**；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
@@ -113,11 +113,12 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 
 端侧客户端进游戏前有一个 Minecraft 风格的菜单（`shell/picker.js`），盖住启动画面：
 
-- **主页**：上下两个选项——**单人游戏**（完全离线：把游戏服务器跑在页面里，无需任何服务器）、**多人游戏**。
-- **多人游戏页**：服务器列表 + **添加服务器**（填名称与地址）、**直接连接**（只填地址，连上后不进列表）、**编辑**（改选中的自建服务器；内置的"本机 / 局域网"与打包默认服不可改）、**刷新**（把所有服务器重新测一遍延迟）与"返回"。
+- **主页**：**单人游戏**（完全离线：把游戏服务器跑在页面里，无需任何服务器）、**创建服务器**（仅桌面版：客户端自己开服，见下）、**加入服务器**（连到别处的服务器）。
+- **加入服务器页**：服务器列表 + **添加服务器**（填名称与地址）、**直接连接**（只填地址，连上后不进列表）、**编辑**（改选中的自建服务器；内置的"本机 / 局域网"与打包默认服不可改）、**刷新**（把所有服务器重新测一遍延迟）与"返回"。
 - **列出的服务器**：内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包时指定的地址会作为"默认服务器"列出；再加上自己添加的服务器（存在客户端本地，旧的"只存地址"格式会自动升级成"名称 + 地址"）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
 - **地址怎么写**：`host`、`host:port`、`http(s)://…`、`ws(s)://…` 都行，**不用手写协议**——不带协议时，带端口的地址先按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的那个连不上就自动换另一种协议再试，哪个通用哪个，并把那个地址记下来。所以公网 IP + 端口（如 `211.71.60.138:3000`）能直接填。
 - **记住上次选择**：桌面端勾上"记住并直接进入"后，下次启动直接进游戏（想换服务器按 **F2**，或用 `--choose-server` 启动）。Android 没有 F2，所以每次都显示这个页面（默认不记住），免得换了服务器回不去。
+- **创建服务器（仅桌面版）**：主页中间的「创建服务器」进去后点「对局域网开放」——**客户端自己就是服务器**（`desktop/host-server.mjs` 在 Electron 主进程里跑真实的 `server/net.js` + `lobby.js` + `match/`，绑 `0.0.0.0`）。页面会显示 `你的局域网IP:端口`（默认 `47822`，被占则顺延）与「复制地址」「进入本地服务器」「关闭」。**同伴两种加入方式**：①用**浏览器直接打开 `http://你的IP:端口`**（host 在同一端口托管整套游戏，打开即玩，无需装客户端）；②用自己的客户端走**加入服务器 → 添加服务器**填这个地址（也能用 `/ws` 探测到延迟）。网页版 / Android 没有这个入口（浏览器不能监听端口）。详见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 - **网页版不受影响**：浏览器版没有这个页面，服务器永远是自己所在的站点。
 - **重启后不丢本地缓存**：身份 token、干员调配、设置都存在 `localStorage` 里，而它是按"源"隔离的——所以桌面壳固定用 `127.0.0.1:47821`（`desktop/serve.mjs` 的 `DEFAULT_PORT`），每次启动都是同一个源，重启后原样读回（以前每次随机端口 = 每次换源，等于重装）。Android 本来就从固定的 `https://localhost` 提供页面，无需处理。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.4。
 - Android 上连局域网的 `ws://` 需要 APK 打开 `allowMixedContent`（本仓库默认打开，原因见 [docs/PACKAGING.md](docs/PACKAGING.md) §5）。
@@ -137,6 +138,18 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 启动模式（优先级从高到低）：`?mode=solo|multi` → `sp.shell.mode`（选择页写入）→ `globalThis.__SP_OFFLINE__`（`--offline` 构建的网页版默认 solo）。**单人模式只提供「独立模拟」**（对局引擎、战斗模拟都在本地，没有服务端跑 AI / 校验的开销）。
 
 网页版：`node tools/package-client.mjs --offline` 生成 `build/client/www`，放到任意静态托管的**站点根目录**即可（payload 内部都用根绝对路径）；exe / apk 用上面的打包命令产出，启动后在选择页选「单人游戏」。
+
+## 对局域网开放（桌面版客户端即服务器）
+
+桌面版还能**自己当服务器**（Minecraft「集成服务器」/「对局域网开放」的思路）：主页选「创建服务器」再点「对局域网开放」，Electron 主进程用 [`desktop/host-server.mjs`](desktop/host-server.mjs) 起一个**真实的 WebSocket 服务器**，直接复用 payload 里的 `server/net.js` + `lobby.js` + `match/`（和页内单人模式同一套引擎），绑 `0.0.0.0:<端口>`（默认 `47822`，被占则顺延到 `+15`，再不行由系统分配）。
+
+- 页面上显示 `你的局域网IP:端口`，可「复制地址」发给同一局域网的博士。**浏览器同伴直接打开 `http://你的IP:端口` 即可玩**（同一端口同时提供静态页面与 WebSocket；访客拿到的 `/js/runtime-config.js` 会指向本机 origin 并跳过选择页，自动连上主机）。用自己的客户端也可以：**加入服务器 → 添加服务器**填这个地址（`/healthz` 带 CORS，探测能显示版本 / 在线人数）。
+- 访客会从主机下载整套素材（约 290 MB，局域网内），所以首次进较慢；用 exe/apk 客户端加入的同伴则用自己本地的素材，只连 `/ws`，不下载。
+- 「进入本地服务器」把本机客户端指向这个进程内服务器（写 `sp.shell.server` 后重载），于是你和局域网玩家在同一个大厅里开「同盟模拟」。
+- 数据由主进程从 `resources/www/data/*.json` 读盘注入（`offline/data-provider.js` 同时支持浏览器 fetch 与 Node 预载）；全靠相对路径导入，不需要改游戏仓库。
+- 页面 ↔ 主进程只有一组窄 IPC（`desktop/preload.cjs` 暴露 `window.__SP_HOST__` 的 `start`/`stop`/`status`）；网页版 / Android 没有这个桥，按钮自动隐藏。
+- 只是 `ws://` 明文 + 局域网，**首次启动 Windows 会弹防火墙入站允许**（和 Minecraft 一样）。
+- 安全/限制沿用游戏服务器：本地/局域网地址不受每网络限流（`server/net.js` 的 `clientAddress`）。
 
 ## 许可
 

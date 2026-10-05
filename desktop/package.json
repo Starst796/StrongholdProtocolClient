@@ -13,6 +13,9 @@
     "pack": "electron-builder --win --x64",
     "pack:portable": "electron-builder --win portable --x64"
   },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
   "devDependencies": {
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3"
@@ -33,8 +36,10 @@
       "main.mjs",
       "serve.mjs",
       "trust.mjs",
+      "host-server.mjs",
+      "preload.cjs",
       "package.json",
-      "!node_modules/**/*"
+      "node_modules/ws/**/*"
     ],
     "extraResources": [
       {

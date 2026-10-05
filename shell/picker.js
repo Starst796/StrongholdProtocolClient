@@ -7,10 +7,12 @@
 // can set `globalThis.__SP_SERVER__` (read by public/js/net.js through resolveServerTarget) before the game opens
 // its socket. The browser build has no such file and stays pinned to its own origin.
 //
-// Layout (Minecraft-like): a main page offers 单人游戏 / 多人游戏. 单人游戏 boots the in-page single-player server
-// (offline/bootstrap.js): it writes `sp.shell.mode = 'solo'` and reloads, and the offline layer runs the game's own
-// lobby / match engine over an in-memory WebSocket — no server needed. 多人游戏 opens the server list, where the
-// player can add a server (name + address), connect directly to a typed address, or join a listed/remembered one.
+// Layout (Minecraft-like): a main page offers 单人游戏 / 创建服务器 / 加入服务器.
+//   单人游戏 boots the in-page single-player server (offline/bootstrap.js): it writes `sp.shell.mode = 'solo'` and
+//            reloads, and the offline layer runs the game's own lobby / match engine over an in-memory WebSocket.
+//   创建服务器 (desktop only; needs window.__SP_HOST__) opens the in-process LAN server — the client itself hosts.
+//   加入服务器 opens the server list, where the player can add a server (name + address), connect directly to a
+//            typed address, or join a listed/remembered one.
 //
 // Behaviour
 //   * a remembered choice in localStorage decides the server for the next launch;
@@ -275,6 +277,11 @@ const CSS = `
   font-size:16px;font-weight:700;font-family:inherit;cursor:pointer;letter-spacing:.08em}
 .sp-pick__go:disabled{opacity:.5;cursor:default}
 .sp-pick__opt{display:flex;align-items:center;gap:8px;font-size:13px;color:#98a5a1}
+.sp-pick__lan{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border:1px dashed #2f3b37;border-radius:10px}
+.sp-pick__lanhead{font-size:13px;color:#cdd7d3}
+.sp-pick__lanhead b{color:#4ed8af}
+.sp-pick__lanbtns{display:flex;gap:8px}
+.sp-pick__lan .sp-pick__note{flex:1 1 100%}
 .sp-pick__hint{font-size:12px;color:#697571;line-height:1.6;min-height:1.2em}
 .sp-pick__menu{display:flex;flex-direction:column;gap:12px}
 .sp-pick__mode{display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:22px 20px;border:1px solid #26302d;
@@ -321,13 +328,87 @@ function mount() {
   document.body.appendChild(root);
 
   const saved = readItem(K_SERVER, 'localStorage');
-  let screen = 'home';   // 'home' (mode menu) | 'multi' (server list)
+  let screen = 'home';   // 'home' (mode menu) | 'host' (create/LAN server) | 'multi' (join a server)
   let form = null;       // null | 'add' | 'edit' (name + address) | 'direct' (address only)
   let editingKey = null; // form === 'edit': the stored server being edited (its normalised key)
   let hintText = '';
   let list = [];
   let selected = null;
   const states = new Map();
+
+  // Open to LAN: only the packaged desktop shell exposes window.__SP_HOST__ (desktop/preload.cjs); on the web /
+  // Android build it is absent and the panel stays hidden.
+  const host = globalThis.__SP_HOST__;
+  let hostState = { active: false, port: null, addresses: [], url: null };
+  const hostAddr = (s = hostState) => (s.addresses && s.addresses[0] ? `${s.addresses[0]}:${s.port}` : `127.0.0.1:${s.port}`);
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* insecure context: fall back */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      return true;
+    } catch { return false; }
+  }
+
+  /** Repaint the LAN panel (hidden entirely when the shell exposes no host controls: web / Android). */
+  function renderLan() {
+    const el = root.querySelector('#sp-lan');
+    if (!el) return;
+    if (!host) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    if (hostState.active) {
+      el.innerHTML = `
+        <div class="sp-pick__lanhead">已对局域网开放 · <b>${hostAddr()}</b></div>
+        <div class="sp-pick__lanbtns">
+          <button class="sp-pick__btn" id="sp-lan-copy">复制地址</button>
+          <button class="sp-pick__btn" id="sp-lan-enter">进入本地服务器</button>
+          <button class="sp-pick__btn" id="sp-lan-stop">关闭</button>
+        </div>
+        <div class="sp-pick__note">同一局域网的博士在「加入服务器 → 添加服务器」里填这个地址即可加入。</div>`;
+      el.querySelector('#sp-lan-copy').addEventListener('click', async () => {
+        const ok = await copyText(hostAddr());
+        setHint(ok ? `已复制地址 ${hostAddr()}，发给同一局域网的博士即可` : `请手动输入地址：${hostAddr()}`);
+      });
+      el.querySelector('#sp-lan-stop').addEventListener('click', async () => {
+        try { hostState = await host.stop(); } catch { /* ignore */ }
+        setHint('已关闭局域网开放');
+        renderLan();
+      });
+      el.querySelector('#sp-lan-enter').addEventListener('click', () => {
+        // Point the game client at the in-process server and reboot so the picker's remembered choice applies
+        // (the launch code reads sp.shell.server back into globalThis.__SP_SERVER__).
+        writeItem(K_SERVER, `127.0.0.1:${hostState.port}`, 'localStorage');
+        writeItem(K_MODE, 'multi', 'localStorage');
+        writeItem(K_CHOSEN, '1', 'sessionStorage');
+        hidePicker();
+        globalThis.location.reload();
+      });
+    } else {
+      el.innerHTML = `
+        <button class="sp-pick__btn" id="sp-lan-start">对局域网开放</button>
+        <span class="sp-pick__note">让同一局域网的博士加入你的游戏（本机即服务器，无需另外开服）</span>`;
+      el.querySelector('#sp-lan-start').addEventListener('click', async () => {
+        setHint('正在开启局域网服务器…');
+        try { hostState = await host.start(); setHint(''); }
+        catch (e) { setHint(`开启失败：${e?.message || e}`); }
+        renderLan();
+      });
+    }
+  }
+
+  /** Pull the live host status from the shell and repaint (no-op without a host bridge). */
+  async function refreshHost() {
+    if (!host) return;
+    try { hostState = await host.status(); } catch { /* ignore */ }
+    renderLan();
+  }
 
   /** The stored entry behind a key, when it is a user-added (editable) server. */
   const customEntryOf = (key) => customServers().find((e) => toWsUrl(e.address) === key) || null;
@@ -336,6 +417,15 @@ function mount() {
   const autoRow = isAndroid()
     ? ''
     : '<label class="sp-pick__opt"><input type="checkbox" id="sp-auto"> 记住并直接进入（下次启动不再询问，F2 可重新选择）</label>';
+
+  // 创建服务器 is desktop-only (the shell must expose window.__SP_HOST__); the web / Android build keeps two entries.
+  const hostButton = host
+    ? `
+        <button class="sp-pick__mode" id="sp-host">
+          <span class="sp-pick__mode-name">创建服务器</span>
+          <span class="sp-pick__mode-note">对局域网开放 · 本机即服务器</span>
+        </button>`
+    : '';
 
   const HOME_HTML = `
     <div class="sp-pick__box">
@@ -347,12 +437,27 @@ function mount() {
         <button class="sp-pick__mode" id="sp-solo">
           <span class="sp-pick__mode-name">单人游戏</span>
           <span class="sp-pick__mode-note">离线模拟 · 无需服务器</span>
-        </button>
-        <button class="sp-pick__mode is-primary" id="sp-multi">
-          <span class="sp-pick__mode-name">多人游戏</span>
+        </button>${hostButton}
+        <button class="sp-pick__mode is-primary" id="sp-join">
+          <span class="sp-pick__mode-name">加入服务器</span>
           <span class="sp-pick__mode-note">连接到服务器 · 添加服务器 / 直接连接</span>
         </button>
       </div>
+      <div class="sp-pick__hint" id="sp-hint"></div>
+    </div>`;
+
+  const HOST_HTML = `
+    <div class="sp-pick__box">
+      <div class="sp-pick__head">
+        <div>
+          <div class="sp-pick__title">创建服务器</div>
+          <div class="sp-pick__sub">STRONGHOLD PROTOCOL · HOST</div>
+        </div>
+        <div class="sp-pick__headbtns">
+          <button class="sp-pick__btn" id="sp-back">返回</button>
+        </div>
+      </div>
+      <div class="sp-pick__lan" id="sp-lan"></div>
       <div class="sp-pick__hint" id="sp-hint"></div>
     </div>`;
 
@@ -360,8 +465,8 @@ function mount() {
     <div class="sp-pick__box">
       <div class="sp-pick__head">
         <div>
-          <div class="sp-pick__title">多人游戏</div>
-          <div class="sp-pick__sub">STRONGHOLD PROTOCOL · MULTIPLAYER</div>
+          <div class="sp-pick__title">加入服务器</div>
+          <div class="sp-pick__sub">STRONGHOLD PROTOCOL · JOIN SERVER</div>
         </div>
         <div class="sp-pick__headbtns">
           <button class="sp-pick__btn" id="sp-refresh" title="重新测试各服务器延迟">刷新</button>
@@ -564,7 +669,7 @@ function mount() {
 
   /** Build the current screen's skeleton and wire it up. */
   function layout() {
-    root.innerHTML = screen === 'home' ? HOME_HTML : MULTI_HTML;
+    root.innerHTML = screen === 'home' ? HOME_HTML : screen === 'host' ? HOST_HTML : MULTI_HTML;
     if (screen === 'home') {
       root.querySelector('#sp-solo').addEventListener('click', () => {
         // Single-player runs the game server inside the page (offline/bootstrap.js); remember the choice and reboot
@@ -574,7 +679,13 @@ function mount() {
         hidePicker();
         globalThis.location.reload();
       });
-      root.querySelector('#sp-multi').addEventListener('click', () => { screen = 'multi'; form = null; setHint(''); layout(); loadList(); });
+      // The host entry exists only when the shell exposes the bridge (desktop).
+      root.querySelector('#sp-host')?.addEventListener('click', () => { screen = 'host'; form = null; setHint(''); layout(); });
+      root.querySelector('#sp-join').addEventListener('click', () => { screen = 'multi'; form = null; setHint(''); layout(); loadList(); });
+    } else if (screen === 'host') {
+      root.querySelector('#sp-back').addEventListener('click', () => { screen = 'home'; setHint(''); layout(); });
+      renderLan();
+      refreshHost();
     } else {
       root.querySelector('#sp-back').addEventListener('click', () => { screen = 'home'; form = null; editingKey = null; setHint(''); layout(); });
       root.querySelector('#sp-refresh').addEventListener('click', refreshAll);
@@ -600,7 +711,7 @@ function mount() {
   root.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
     if (form) { form = null; editingKey = null; setHint(''); renderForm(); }
-    else if (screen === 'multi') { screen = 'home'; setHint(''); layout(); }
+    else if (screen !== 'home') { screen = 'home'; setHint(''); layout(); }
   });
 
   // The game boots underneath this overlay: hide its boot screen so nothing flashes through.
@@ -646,7 +757,11 @@ globalThis.__SP_SHELL_PICKER__ = {
 };
 
 // ---- launch decision --------------------------------------------------------------------------------------------
-const savedAddress = readItem(K_SERVER, 'localStorage');
+// A LAN guest (the page was served by a "创建服务器" host: /js/runtime-config.js sets __SP_LAN_CLIENT__) plays on
+// that host: never show the picker, and ignore any server this browser remembered from before (it must stay on its
+// own origin, which net.js falls back to when __SP_SERVER__ is empty).
+const lanClient = globalThis.__SP_LAN_CLIENT__ === true;
+const savedAddress = lanClient ? null : readItem(K_SERVER, 'localStorage');
 if (savedAddress) globalThis.__SP_SERVER__ = savedAddress;
 /** The server the game is booting with: public/js/net.js reads __SP_SERVER__ when it opens the socket. */
 const bootTarget = keyOf(globalThis.__SP_SERVER__);
@@ -654,4 +769,4 @@ const bootTarget = keyOf(globalThis.__SP_SERVER__);
 const forced = new URLSearchParams(globalThis.location?.search || '').get('pick') === '1';
 const chosenThisSession = readItem(K_CHOSEN, 'sessionStorage') === '1';
 const autostart = autostartOn(readItem(K_AUTOSTART, 'localStorage'), isAndroid());
-if (shouldShowPicker({ forced, chosenThisSession, savedAddress, autostart })) showPicker();
+if (!lanClient && shouldShowPicker({ forced, chosenThisSession, savedAddress, autostart })) showPicker();

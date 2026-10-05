@@ -128,16 +128,12 @@ export function healthzProxyTarget(rawUrl) {
 }
 
 /**
- * Start the loopback static server.
- *
- * `port > 0` is preferred and, if it is busy, the next PORT_SEARCH consecutive ports are tried before giving up
- * and letting the OS pick one (`port: 0`). The caller keeps the resulting origin stable by passing a fixed port
- * (see DEFAULT_PORT) — persistence in the page depends on it.
- *
- * @param {{ root: string, host?: string, port?: number, proxy?: boolean, log?: { warn?: Function, error?: Function } }} opts
- * @returns {Promise<{ url: string, port: number, server: http.Server, close: () => Promise<void> }>}
+ * The request handler served by createStaticServer, exported so a caller that owns its own http.Server (the LAN
+ * host, desktop/host-server.mjs — HTTP and WebSocket share one port there) can reuse the exact same static logic.
+ * @param {{ root: string, proxy?: boolean, log?: { warn?: Function, error?: Function } }} opts
+ * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createStaticServer({ root, host = '127.0.0.1', port = 0, proxy = false, log = console } = {}) {
+export function createRequestHandler({ root, proxy = false, log = console } = {}) {
   const rootAbs = path.resolve(root);
 
   const finish = (req, res, status, headers, body) => {
@@ -225,12 +221,27 @@ export function createStaticServer({ root, host = '127.0.0.1', port = 0, proxy =
     fs.createReadStream(absPath).pipe(res);
   }
 
+  return handle;
+}
+
+/**
+ * Start the loopback static server (the packaged client's own window).
+ *
+ * See createRequestHandler for the request logic; this only adds the listener and port search.
+ * @param {{ root: string, host?: string, port?: number, proxy?: boolean, log?: { warn?: Function, error?: Function } }} opts
+ * @returns {Promise<{ url: string, port: number, server: http.Server, close: () => Promise<void> }>}
+ */
+export function createStaticServer({ root, host = '127.0.0.1', port = 0, proxy = false, log = console } = {}) {
+  const handle = createRequestHandler({ root, proxy, log });
+
   const server = http.createServer((req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     handle(req, res).catch((e) => {
       log.error?.('[client] request failed', req.url, e);
-      if (!res.headersSent) finish(req, res, 500, { 'Content-Type': 'text/plain; charset=utf-8' }, 'internal error');
-      else res.end();
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(req.method === 'HEAD' ? undefined : 'internal error');
+      } else res.end();
     });
   });
 

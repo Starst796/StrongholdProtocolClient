@@ -40,16 +40,21 @@ function ownRecord(map, id) {
 
 /**
  * Build a data module with server/data.js' API over one JSON file per name.
- * @param {{ base?: string, files?: string[], fetchFn?: typeof fetch, log?: { warn: Function, error: Function } }} [opts]
+ *
+ * In the browser it fetches `/data/*.json`; in the Electron main process (the "open to LAN" host) the files are read
+ * from disk and injected as `preloaded`, so the same payload module works in both (see desktop/host-server.mjs).
+ * @param {{ base?: string, files?: string[], fetchFn?: typeof fetch, preloaded?: object|null,
+ *   log?: { warn: Function, error: Function } }} [opts]
  */
-export function createDataModule({ base = '/data/', files = [], fetchFn = (...a) => globalThis.fetch(...a), log = console } = {}) {
+export function createDataModule({ base = '/data/', files = [], fetchFn = (...a) => globalThis.fetch(...a), preloaded = null, log = console } = {}) {
   const DATA_FILES = Object.freeze([...files]);
   /** @type {Readonly<Record<string, any>> | null} */
-  let singleton = null;
+  let singleton = preloaded ? deepFreeze(preloaded) : null;
   let inflight = null;
 
   /** Fetch every data file once; resolves to the deep-frozen merged object (idempotent). */
   function loadData() {
+    if (singleton) return Promise.resolve(singleton);
     if (inflight) return inflight;
     inflight = (async () => {
       const out = {};
@@ -72,6 +77,9 @@ export function createDataModule({ base = '/data/', files = [], fetchFn = (...a)
 
   const getData = () => singleton || EMPTY;
   function resetData() { singleton = null; inflight = null; }
+
+  /** Load synchronously from an already-parsed object (the Node host injects the files it read from disk). */
+  function setData(obj) { singleton = obj ? deepFreeze(obj) : null; inflight = null; return singleton; }
 
   function lookup(file, id, data = getData()) {
     if (!data || typeof data !== 'object' || typeof file !== 'string' || !Object.hasOwn(data, file)) return null;
@@ -108,6 +116,7 @@ export function createDataModule({ base = '/data/', files = [], fetchFn = (...a)
     INDEXED_FILES,
     loadData,
     getData,
+    setData,
     resetData,
     lookup,
     getChess, getBond, getGarrison, getItem, getBand, getEffect,
