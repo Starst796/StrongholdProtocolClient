@@ -257,7 +257,9 @@ export const OFFLINE_FILES = [
   ['node-net.js', 'offline/node-net.js'],
   ['data-provider.js', 'offline/data-provider.js'],
   ['loopback.js', 'offline/loopback.js'],
+  ['game-server.js', 'offline/game-server.js'],
   ['bootstrap.js', 'offline/bootstrap.js'],
+  ['host-mobile.js', 'offline/host-mobile.js'],
 ];
 
 /** Body of a payload offline-layer file — offline/<name>, copied verbatim. */

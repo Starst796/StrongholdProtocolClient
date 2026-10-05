@@ -148,7 +148,8 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 | `mobile/android/` | Capacitor 生成的 Gradle 工程（可提交；`assets/public` 与 `local.properties` 已在 `.gitignore` 里忽略） |
 | `mobile/android/app/src/main/AndroidManifest.xml` | `usesCleartextTraffic`（局域网 `ws://` 需要；默认仍是 `wss://`）、`screenOrientation="sensorLandscape"` |
 | `mobile/android/app/src/main/res/values/styles.xml` | `windowLayoutInDisplayCutoutMode=shortEdges`（不这样系统会在横屏把窗口 letterbox，刘海那条就是左边的黑边） |
-| `mobile/android/app/src/main/java/.../MainActivity.java` | 全屏：`setDecorFitsSystemWindows(false)` + 隐藏 system bars（划一下仍能唤出），失焦后重新隐藏 |
+| `mobile/android/app/src/main/java/.../MainActivity.java` | 全屏：`setDecorFitsSystemWindows(false)` + 隐藏 system bars（划一下仍能唤出），失焦后重新隐藏；注册 `HostServerPlugin`（「创建服务器」，见 §6） |
+| `mobile/android/app/src/main/java/.../host/` | 手机端开服的原生侧：`MiniHostServer.java`（单端口手写 WebSocket + 静态托管，纯 Java 可单测）、`AssetStaticSource.java`（直接读 APK 资源，不复制到存储）、`StaticSource.java`/`DirStaticSource.java`（资源来源抽象，后者供 JVM 测试）、`HostServerPlugin.java`（Capacitor 桥） |
 
 ### 全屏与手机显示（两个独立问题）
 
@@ -172,7 +173,26 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 
 **自签证书的服务器**：Android 用同一套"首次信任"策略，实现是 `MainActivity` 里给 Capacitor 的 `BridgeWebViewClient` 加一个子类、只覆盖 `onReceivedSslError`（不清掉 Capacitor 自己的 client，本地 payload 与 JS 桥照常），证书信息与指纹在 `TrustedCerts.java`（`SslCertificate.getX509Certificate()` 是 API 29+，24–28 走 `SslCertificate.saveState` 的 `x509-certificate` 字节）。弹窗显示域名 + 证书主题 + SHA-256 指纹，"仍然连接"后按 `主机 = 指纹` 存进应用私有 `SharedPreferences`（`stronghold_trusted_certs`），之后静默直连；**其它服务器照常校验**，证书换了指纹变了会再问一次。Android 没有 `--insecure-tls` 那种"全部放行"的开关。
 
-**关于 `allowMixedContent`**：WebView 的页面本身是 `https://localhost`（`androidScheme`），而自建的局域网服务器只有 `ws://`（没有证书），Chromium 会把它当 mixed content 拦掉——`usesCleartextTraffic` 只管系统层的明文策略，管不了这个。所以 APK 里打开了 `allowMixedContent`，让选择服务器页里的 `ws://<局域网地址>:3000` 能用。**代价**：这一层保护没了，页面里的其他连接也可以降级到明文；官方服务器仍然走 `wss://`。不想要局域网联机的话，把 `mobile/capacitor.config.json` 改回 `false` 重新打包即可（`localhost` 属于"可信来源"，不受影响）。
+**关于 `allowMixedContent`**：WebView 的页面本身是 `https://localhost`（`androidScheme`），而自建的局域网服务器只有 `ws://`（没有证书），Chromium 会把它当 mixed content 拦掉——`usesCleartextTraffic` 只管系统层的明文策略，管不了这个。所以 APK 里打开了 `allowMixedContent`，让选择服务器页里的 `ws://<局域网地址>:3000` 能用，也让「创建服务器 → 进入本地服务器」能连 `ws://127.0.0.1:47822`。**代价**：这一层保护没了，页面里的其他连接也可以降级到明文；官方服务器仍然走 `wss://`。不想要局域网联机的话，把 `mobile/capacitor.config.json` 改回 `false` 重新打包即可（`localhost` 属于"可信来源"，不受影响）。
+
+### 手机开服（创建服务器 · 对局域网开放）
+
+手机和桌面一样能当服务器，只是分工不同：**socket 在原生 Java 侧，游戏逻辑仍在 WebView 里**（`server/net.js` + `lobby.js` + `match/` 只有 JS 版，不该在 Java 里重写一遍）。
+
+```
+浏览器访客 / 别的客户端 ──ws──> MiniHostServer.java ──"frame"事件──> offline/host-mobile.js ──> Network.handleConnection(桥接 socket)
+                              <──send()/ping()/closeConn()──         <── 大厅的回复 ──<── Lobby / Match
+```
+
+- **一个端口两个用途**：`MiniHostServer` 在同一端口上做 WebSocket（`/ws`，含握手 / 分片 / ping-pong / 二进制拒绝 / close 回应）与静态托管（`GET`/`HEAD`、MIME 表、拒绝路径穿越和点文件、`/js/runtime-config.js` 换成"在本机 origin 玩、跳过选择页"的访客版）。端口沿用桌面的 `47822`，被占则顺延 16 个，再不行交给系统。响应按 HTTP/1.1 收尾：能拿到长度就 `Content-Length`，拿不到（APK 里压缩存储的资源）就用 `Transfer-Encoding: chunked`——**不再靠"关连接"表示结束**（那会让部分客户端，例如 Node 的 `fetch`，在连接复用时出错），连接也能继续复用。
+- **不占额外存储**：静态文件由 `AssetStaticSource` 用 `AssetManager` 直接从 APK 里读。访客看的是 WebView 自己跑的那份文件。
+- **必须是经典脚本**：`/offline/host-mobile.js` 用 `<script src=...>` 加载（不是 `type="module"`），因为它必须在 `/js/shell/picker.js` 之前定义 `window.__SP_HOST__`。模块脚本都是 deferred 的，而且**前一个模块的依赖图还在加载时并不会挡住后面的模块**——真机上量到 picker 比它早约 140 ms 执行，于是「创建服务器」入口根本没渲染出来。经典脚本在解析时就跑，先于所有模块，和桌面版 preload 的保证一致；代价是它不能写静态 `import`，所以引擎模块改成按需 `import()`（顺带让不开服的人不用加载 `server/net.js`、`lobby.js`）。
+- **桥的协议**（`HostServerPlugin.java` ↔ `offline/host-mobile.js`）：原生 → 页面是 `open`/`frame`/`pong`/`close` 事件（带 socket id），页面 → 原生是 `send`/`ping`/`closeConn`/`closeAll`；`start`/`stop`/`status` 的返回值就是桌面版 `window.__SP_HOST__` 的形状（所以选择页一行都不用改）。侦听器回调在连接线程上，`notifyListeners` 前统一 `executeOnMainThread`。
+- **顺序与丢帧**：`start()` 先把页内游戏服务器建好再开端口，所以访客不会撞上半成品；`open` 之后、`Network` 接管之前到达的帧先后落在两处缓冲里（连接建立中 → `early`，socket 已建但未接管 → `RemoteServerSocket._pending`），`adopt()` 时按序放行。访客的 `hello` 正好落在这两个窗口之一——真机上漏掉它会让访客"连上了但没人理"。
+- **心跳**：大厅的 `Network` 定时 `ping()`，桥会调原生的 ping；原生收到 pong 再回一个 `pong` 事件，会话的存活判定还是游戏自己的那套。
+- **页面走人 = 引擎走人**：游戏引擎跑在 WebView 里，所以 `pagehide`（`进入本地服务器` 那一次重载、或退出应用）时桥会调 `closeAll()` 把访客断开——端口继续开着等新页面接管，但访客拿到的是干净断开而不是"发出去没人应"。**因此先「进入本地服务器」再叫同伴进来**：反过来的话，重载会把你已经连上的同伴踢掉（他们重新加入即可）。
+- **可测的部分**：`MiniHostServer` 是纯 Java（不依赖 Android API），可以 `javac` 到桌面 JVM 上、用真实 HTTP/WebSocket 客户端压一遍（握手、分片、16/64 位长度、UTF-8、ping-pong、二进制拒绝、未掩码拒绝、keep-alive、并发、5 MB 文件逐字节校验、端口顺延；`Harness.java` 传 `nolength` 还能把 chunked 这条路也走一遍）；桥的页面侧（`offline/loopback.js` 的 `createRemoteServerSocket` + `offline/host-mobile.js`）用真实 `server/net.js` + `lobby.js` 在 Node 里跑（`test/host-mobile.test.js`，含"帧比引擎先到"那条竞态用例）。
+- **真机验证过（雷电模拟器 + `adb`）**：入口出现、`对局域网开放` 后在 `172.16.1.15:47822` 监听、另一台机器（`adb forward`）用浏览器方式把整套 payload（index.html 引用的 27 个资源）取下来、WebSocket 握手 → `hello`→`welcome` → `room.create` → 第二个访客进同一个房间、主机端「进入本地服务器」连到自己（标题页显示"已连接服务器"）、重载时访客被干净断开且端口继续托管。仍未在真机上验证的：不同 Wi-Fi/AP 隔离下的连通性、以及真机多人的手感。
 
 产物：`mobile/android/app/build/outputs/apk/debug/app-debug.apk`（debug 签名，可直接安装）。安装：`adb install -r <apk>`，或把 APK 拷到手机点开（需允许「安装未知应用」）。
 
@@ -216,8 +236,8 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 
 | 行为 | 说明 |
 |---|---|
-| 主页 | **单人游戏**（完全离线：把服务器跑在页面里）、**创建服务器**（仅桌面版：客户端自己开服并对局域网开放）、**加入服务器** |
-| 创建服务器页 | 桌面版专用：**对局域网开放** / **关闭**，显示 `局域网IP:端口`、**复制地址**、**进入本地服务器**（把本机客户端指向页内进程服务器）。开放后同一端口同时托管静态页面与 `/ws`，同伴既能用**浏览器**打开 `http://<IP>:<端口>` 直接玩，也能用自己的客户端「加入服务器」填该地址。网页版/Android 无此入口 |
+| 主页 | **单人游戏**（完全离线：把服务器跑在页面里）、**创建服务器**（客户端自己开服并对局域网开放：桌面版与 Android）、**加入服务器** |
+| 创建服务器页 | **对局域网开放** / **关闭**，显示 `局域网IP:端口`、**复制地址**、**进入本地服务器**（把本机客户端指向这台服务器）。开放后同一端口同时托管静态页面与 `/ws`，同伴既能用**浏览器**打开 `http://<IP>:<端口>` 直接玩，也能用自己的客户端「加入服务器」填该地址。桌面版跑在 Electron 主进程（`desktop/host-server.mjs`），Android 跑在原生 Java 侧 + WebView 页内引擎（`host/MiniHostServer.java` + `offline/host-mobile.js`，见 §5）。网页版无此入口（浏览器不能监听端口） |
 | 加入服务器页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，连上后不保存进列表）、**编辑**（改选中的自建服务器；内置与打包默认服不可改）、**刷新**（重新测一遍所有延迟，放在"返回"左边）、**返回** |
 | 地址写法 | `host`、`host:port`、`http(s)://…`、`ws(s)://…`，不用手写协议：不带协议时带端口的按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的协议不通会自动换另一种再试，命中后把那个地址存进 `sp.shell.server`（`shell/picker-core.js` 的 `ambiguousScheme` 决定哪些地址需要双协议探测） |
 | 列出的服务器 | 内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包指定的地址会标"默认"；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
@@ -262,7 +282,7 @@ node scripts/notice.mjs --clear        # 撤回
 
 | | 打包进去什么 |
 |---|---|
-| 打包 | `public/**`（含 `assets`、`fonts`、`vendor`）、`data/**`、`shared/**`、`server/sim/**/*.js`（去掉 Node 专用的 `nodeData.js`）、生成的 `data.js` / `build.json` / `js/runtime-config.js` / `js/shell/picker.js` / `js/shell/picker-core.js`、`local-assets.json`（没做本地提取时给空清单）、打补丁后的 `index.html` / `js/net.js` / `js/screens/room.js` |
+| 打包 | `public/**`（含 `assets`、`fonts`、`vendor`）、`data/**`、`shared/**`、`server/sim/**/*.js`（去掉 Node 专用的 `nodeData.js`）、生成的 `data.js` / `build.json` / `js/runtime-config.js` / `js/shell/picker.js` / `js/shell/picker-core.js` / `offline/**`（`loopback.js`、`game-server.js`、`bootstrap.js`、`host-mobile.js`、两个 node shim、`data-provider.js`）、`local-assets.json`（没做本地提取时给空清单）、打补丁后的 `index.html` / `js/net.js` / `js/screens/room.js` / `js/screens/lobby.js` |
 | 不打包 | 游戏仓库的 `server/` 其余部分（HTTP / WS / 大厅 / 对局引擎）、`docs/`、`test/`、`.cache/`、`.tools/`、`node_modules/` |
 
 `tools/package-client.mjs` 是**增量**的：文件大小与修改时间没变就跳过，源文件删掉后产物里的对应文件也会被删——重建很快（第二次通常 0 个文件被写入）。
@@ -273,11 +293,12 @@ node scripts/notice.mjs --clear        # 撤回
 |---|---|
 | 弹窗「客户端资源缺失」 | 先运行 `npm run client:build` |
 | 报「找不到游戏仓库」 | 用 `--game <目录>`、`SP_GAME_ROOT` 或 `client.config.json` 的 `gameRoot` 指定 checkout |
-| 报 `hunk … does not match` / 补丁没改到文件 | 上游改了 `public/index.html`、`js/net.js` 或 `js/screens/room.js`：按新源码重新生成 `patches/game-client.patch`，再跑一次 |
+| 报 `hunk … does not match` / 补丁没改到文件 | 上游改了 `public/index.html`、`js/net.js`、`js/screens/room.js` 或 `js/screens/lobby.js`：按新源码重新生成 `patches/game-client.patch`，再跑一次 |
 | 选择服务器页里全部"无法连接" | 地址写错、服务器没开、或防火墙拦了 `/ws`；本机测试用 `npm start` 起游戏仓库（默认 3000），页面上的 `localhost:3000` 会变绿 |
 | 选择页每次启动都出现 / 想换服务器 | 桌面按 **F2**（或 `--choose-server`），取消勾选"记住并直接进入"；Android 每次都会问 |
 | 重启后要重新登录 / 干员调配、设置被清空 | 旧版本客户端每次启动都换随机端口（换了源，`localStorage` 读不回来）：重新 `npm run client:desktop` 生成固定 `DEFAULT_PORT`（47821）的客户端，见 §4.4 |
 | Android 上局域网地址连不上 | 先确认 APK 是打开 `allowMixedContent` 打的（§5）；地址用 `192.168.x.x:3000` 这种形式，手机与服务器要在同一个 Wi-Fi |
+| Android 上「对局域网开放」后别人连不上 | 手机与同伴要在同一个 Wi-Fi，且路由器没有开"客户端隔离"（AP isolation）；先在同一台手机上用浏览器打开 `http://127.0.0.1:<端口>` 确认服务器本身活着，再换 `http://<手机IP>:<端口>` 试（§5）。端口被占时会顺延，界面上显示的就是真实端口 |
 | 报 `DATA_SHIM_JS changed upstream` / `SIM_PRIVATE is now […]` | 游戏仓库那两处变了：同步 `tools/game-contract.mjs` |
 | 打包后的客户端里图片 / 音频 404 | 游戏仓库的 `public/assets` 不完整：在那边 `npm run assets` |
 | 连不上服务器 | 先确认服务器活着：`curl http://localhost:3000/healthz`；再用 `--server 127.0.0.1:3000` 指向本地 `npm start` 排除客户端问题。远程服务器同理，换成对应地址 |

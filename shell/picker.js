@@ -10,7 +10,8 @@
 // Layout (Minecraft-like): a main page offers 单人游戏 / 创建服务器 / 加入服务器.
 //   单人游戏 boots the in-page single-player server (offline/bootstrap.js): it writes `sp.shell.mode = 'solo'` and
 //            reloads, and the offline layer runs the game's own lobby / match engine over an in-memory WebSocket.
-//   创建服务器 (desktop only; needs window.__SP_HOST__) opens the in-process LAN server — the client itself hosts.
+//   创建服务器 (needs window.__SP_HOST__: the desktop preload or the Android native host's /offline/host-mobile.js)
+//            opens the LAN server on this device — the client itself hosts, and LAN guests join it.
 //   加入服务器 opens the server list, where the player can add a server (name + address), connect directly to a
 //            typed address, or join a listed/remembered one.
 //
@@ -336,8 +337,8 @@ function mount() {
   let selected = null;
   const states = new Map();
 
-  // Open to LAN: only the packaged desktop shell exposes window.__SP_HOST__ (desktop/preload.cjs); on the web /
-  // Android build it is absent and the panel stays hidden.
+  // Open to LAN: the packaged shells expose window.__SP_HOST__ — Electron through desktop/preload.cjs, Android
+  // through /offline/host-mobile.js (the native HostServer plugin). The web build has neither and keeps two entries.
   const host = globalThis.__SP_HOST__;
   let hostState = { active: false, port: null, addresses: [], url: null };
   const hostAddr = (s = hostState) => (s.addresses && s.addresses[0] ? `${s.addresses[0]}:${s.port}` : `127.0.0.1:${s.port}`);
@@ -357,7 +358,7 @@ function mount() {
     } catch { return false; }
   }
 
-  /** Repaint the LAN panel (hidden entirely when the shell exposes no host controls: web / Android). */
+  /** Repaint the LAN panel (hidden entirely when the shell exposes no host controls: the web build). */
   function renderLan() {
     const el = root.querySelector('#sp-lan');
     if (!el) return;
@@ -418,7 +419,7 @@ function mount() {
     ? ''
     : '<label class="sp-pick__opt"><input type="checkbox" id="sp-auto"> 记住并直接进入（下次启动不再询问，F2 可重新选择）</label>';
 
-  // 创建服务器 is desktop-only (the shell must expose window.__SP_HOST__); the web / Android build keeps two entries.
+  // 创建服务器 needs window.__SP_HOST__ (Electron preload / Android native host); the web build keeps two entries.
   const hostButton = host
     ? `
         <button class="sp-pick__mode" id="sp-host">

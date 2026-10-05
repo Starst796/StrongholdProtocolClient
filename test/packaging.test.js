@@ -224,6 +224,13 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
       assert.ok(bootstrapAt < html.indexOf('<script type="module" src="/js/main.js"'), 'the offline bootstrap runs before the game boots');
       // the picker must load *before* the offline layer: it captures the real WebSocket constructor at module load
       assert.ok(pickerAt < bootstrapAt, 'the picker loads before /offline/bootstrap.js (it captures the native WebSocket)');
+      // the phone-side LAN host defines window.__SP_HOST__ before the picker reads it. It must be a CLASSIC script:
+      // a module would be deferred, and a module still fetching its graph does not block the next one — measured on
+      // a real WebView, picker.js ran ~140 ms first and the 创建服务器 entry disappeared.
+      const hostMobileAt = html.indexOf('<script src="/offline/host-mobile.js"></script>');
+      assert.ok(hostMobileAt !== -1, 'index.html must load /offline/host-mobile.js as a classic script');
+      assert.ok(!html.includes('<script type="module" src="/offline/host-mobile.js">'), 'as a module script it could run after the picker');
+      assert.ok(hostMobileAt < pickerAt, '/offline/host-mobile.js defines window.__SP_HOST__ before the picker reads it');
       assert.match(html, /"node:crypto": "\/offline\/node-crypto\.js"/);
       assert.match(html, /"node:net": "\/offline\/node-net\.js"/);
       // ...and the shell stylesheet must come after every game stylesheet, so it wins on equal specificity
@@ -348,7 +355,7 @@ describe('client payload assembly', () => {
     assert.equal(r.server, DEFAULT_SERVER);
     assert.equal(r.missingAssets, false);
     assert.equal(r.patched.length, PATCHED_FILES.length);
-    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json', 'offline/node-crypto.js', 'offline/node-net.js', 'offline/data-provider.js', 'offline/loopback.js', 'offline/bootstrap.js', 'server/data.js', 'server/net.js', 'server/lobby.js', 'server/match/Match.js', 'server/sim/units.js']) {
+    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json', 'offline/node-crypto.js', 'offline/node-net.js', 'offline/data-provider.js', 'offline/loopback.js', 'offline/game-server.js', 'offline/bootstrap.js', 'offline/host-mobile.js', 'server/data.js', 'server/net.js', 'server/lobby.js', 'server/match/Match.js', 'server/sim/units.js']) {
       assert.ok(existsSync(path.join(out, rel)), `${rel} must be in the payload`);
     }
     // the offline layer is copied verbatim (its /offline/* imports must resolve)

@@ -79,13 +79,31 @@ export function loadDataDir(dir, log = QUIET) {
 
 /** LAN IPv4 addresses of this machine (for the "share this address" line). */
 export function lanAddresses(ifaces = os.networkInterfaces()) {
-  const out = [];
+  const found = [];
   for (const list of Object.values(ifaces)) {
     for (const ni of list || []) {
-      if (ni && ni.family === 'IPv4' && !ni.internal && ni.address) out.push(ni.address);
+      if (ni && ni.family === 'IPv4' && !ni.internal && ni.address) found.push(ni.address);
     }
   }
-  return out;
+  return privateFirst(found);
+}
+
+/**
+ * A machine has several addresses (Wi-Fi, cellular, a VPN, a virtual adapter) and the picker shows the first one, so
+ * order them the way a LAN peer would reach them: the usual home/office ranges first, carrier-grade NAT (Tailscale
+ * etc.) and everything else after. Stable within a rank, so what was listed first stays first.
+ * @param {string[]} addresses
+ */
+export function privateFirst(addresses) {
+  const rank = (a) =>
+    /^192\.168\./.test(a) ? 0
+      : /^10\./.test(a) ? 1
+        : /^172\.(1[6-9]|2\d|3[01])\./.test(a) ? 2
+          : /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a) ? 3
+            : 4;
+  return addresses.map((address, i) => ({ address, rank: rank(address), i }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((e) => e.address);
 }
 
 /**

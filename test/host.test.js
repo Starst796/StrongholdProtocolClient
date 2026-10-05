@@ -40,13 +40,24 @@ describe('host server helpers', () => {
     }
   });
 
-  test('lanAddresses lists non-internal IPv4 addresses only', async (t) => {
+  test('lanAddresses lists non-internal IPv4 addresses only, private ranges first', async (t) => {
     if (!HAVE_WS) return t.skip('ws not installed (desktop/node_modules)');
     const { lanAddresses } = await import('../desktop/host-server.mjs');
     assert.deepEqual(lanAddresses({ lo: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }] }), []);
     assert.deepEqual(
       lanAddresses({ eth0: [{ family: 'IPv4', internal: false, address: '192.168.1.5' }, { family: 'IPv6', internal: false, address: 'fe80::1' }] }),
       ['192.168.1.5'],
+    );
+    // A machine has several addresses (Wi-Fi, cellular, VPN) and the picker shows the first: a carrier address there
+    // would be useless to the other players, so the LAN ranges come first while the rest keeps its order.
+    assert.deepEqual(
+      lanAddresses({
+        rmnet: [{ family: 'IPv4', internal: false, address: '10.23.78.141' }],
+        tun0: [{ family: 'IPv4', internal: false, address: '100.101.102.103' }],
+        wlan0: [{ family: 'IPv4', internal: false, address: '192.168.43.7' }],
+        eth1: [{ family: 'IPv4', internal: false, address: '203.0.113.9' }],
+      }),
+      ['192.168.43.7', '10.23.78.141', '100.101.102.103', '203.0.113.9'],
     );
   });
 
