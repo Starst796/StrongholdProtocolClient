@@ -17,3 +17,12 @@ contextBridge.exposeInMainWorld('__SP_HOST__', {
   /** Close it again. @returns {Promise<object>} the same status shape */
   stop: () => ipcRenderer.invoke('host:stop'),
 });
+
+// The update row (shell/picker.js) needs two things the sandboxed renderer cannot do itself: read the release feed
+// (not same-origin with the page → CORS) and open the download page in the real browser.
+contextBridge.exposeInMainWorld('__SP_UPDATE__', {
+  /** @param {string} url the feed from runtime-config.js @returns {Promise<{ ok: boolean, text?: string, error?: string }>} */
+  check: (url) => ipcRenderer.invoke('update:check', url),
+  /** @param {string} url an artifact URL from that feed @returns {Promise<boolean>} whether it was handed to the browser */
+  open: (url) => ipcRenderer.invoke('update:open', url),
+});

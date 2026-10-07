@@ -5,18 +5,28 @@
 //   npm run release
 //   node tools/package-release.mjs [options]
 //
-// It does the four things a release needs, in order:
+// It does the five things a release needs, in order:
 //   1. reads the game repo's release version (shared/constants.js APP_VERSION, the number the game shows);
-//   2. aligns this repo's own version fields to it: package.json ×3, both lockfiles' root entries, and the
-//      Android Gradle versionName/versionCode (0.1.2 → 102) so the artifacts carry the right number;
+//   2. takes the next client build number (release.json + 1) and aligns this repo's version fields to both — the
+//      version from the game (0.1.3) and the build packed under it (build 12 → versionCode 1030012, which is what
+//      lets an installed app be updated in place; see tools/release-meta.mjs);
 //   3. builds the desktop client (folder form) + a zip of it, and the Android debug APK;
-//   4. copies the artifacts into build/dist/ with versioned names and commits the aligned version in this repo.
+//   4. copies the artifacts into build/dist/, writes the update feed there (latest.json) and remembers the build
+//      number in release.json;
+//   5. commits the aligned version + the new build number in this repo.
+//
+// Publishing is separate and explicit: `node tools/publish-release.mjs` uploads the artifacts and the feed to
+// GitHub Releases (docs/PACKAGING.md §10). Nothing in this driver touches the network.
 //
 // The game repo is never modified: its version is only *read*. Everything else (payload, patches, shells) is
 // produced by tools/package-desktop.mjs / tools/package-android.mjs, which this driver reuses.
 //
 //   --game <dir>      Stronghold-Protocol checkout (default: SP_GAME_ROOT / client.config.json / sibling)
 //   --server <addr>   server the payload connects to (default: client.config.json / localhost:3000)
+//   --feed <url>      update feed baked into the payload (default: client.config.json update.feed; '' = no check)
+//   --build <n>       build number to use (default: release.json + 1)
+//   --notes <text>    release notes for the feed (default: 上游 <version>（<commit>）; this text is shown to players)
+//   --tag <tag>       release tag (default: v<version>-b<build>)
 //   --portable        desktop single-file .exe instead of the folder (slow first screen; see docs/PACKAGING.md §4)
 //   --no-zip          keep the win-unpacked folder, skip the zip
 //   --skip-android    do not build the APK
@@ -32,6 +42,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, loadConfig } from './package-client.mjs';
+import { androidVersionCode, buildLatestFeed, nextBuild, readRelease, releaseTag, sha256File, versionCode, writeRelease } from './release-meta.mjs';
 import { findGameRoot, readAppVersion, readProtocolVersion } from './game-contract.mjs';
 import { buildDesktop } from './package-desktop.mjs';
 
@@ -41,11 +52,9 @@ export const VERSION_JSON = Object.freeze(['package.json', 'desktop/package.json
 export const VERSION_LOCKS = Object.freeze(['desktop/package-lock.json', 'mobile/package-lock.json']);
 const GRADLE = path.join('mobile', 'android', 'app', 'build.gradle');
 
-/** Gradle's versionCode must be a monotonically rising integer; derive it from the semver (0.1.2 → 102). */
-export function versionCode(version) {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? ''));
-  return m ? Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]) : null;
-}
+// `versionCode` (the semver → code map) and `androidVersionCode` (code + build) live in tools/release-meta.mjs —
+// re-exported so the older import sites keep working.
+export { versionCode };
 
 function run(cmd, args, { cwd = CLIENT_ROOT, env = process.env, shell = false } = {}) {
   const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', env, shell });
@@ -60,13 +69,15 @@ function git(args, { cwd = CLIENT_ROOT } = {}) {
 }
 
 /**
- * Point this repo's version fields at `version`; returns the files that actually changed.
+ * Point this repo's version fields at `version` (and Gradle's versionCode at `version` + `build`); returns the files
+ * that actually changed.
  * Only the two leading `"version":` entries of a lockfile (root + packages[""]) are touched, so npm's transitive
  * `0.1.0`s in dev dependencies stay exactly as npm wrote them (and the files keep their original formatting).
  * @param {string} version
+ * @param {number} [build]
  * @returns {string[]}
  */
-export function alignVersions(version) {
+export function alignVersions(version, build = readRelease().build) {
   const changed = [];
   const writeIfChanged = (file, next) => {
     if (fs.readFileSync(file, 'utf8') === next) return false;
@@ -89,7 +100,7 @@ export function alignVersions(version) {
   }
   const gradle = path.join(CLIENT_ROOT, GRADLE);
   if (fs.existsSync(gradle)) {
-    const code = versionCode(version);
+    const code = androidVersionCode(version, build);
     const next = fs.readFileSync(gradle, 'utf8')
       .replace(/(\bversionCode\s+)\d+/, (m, a) => (code == null ? m : `${a}${code}`))
       .replace(/(\bversionName\s+")[^"]*(")/, `$1${version}$2`);
@@ -170,6 +181,7 @@ function buildAndroid({ version, o, log }) {
   const args = ['tools/package-android.mjs'];
   if (o.game) args.push('--game', o.game);
   if (o.server) args.push('--server', o.server);
+  if (o.feed) args.push('--feed', o.feed);
   if (o.release) args.push('--release');
   if (o.skipInstall) args.push('--skip-install');
   run(process.execPath, args, { env: { ...process.env, JAVA_HOME: jdk, ANDROID_HOME: sdk } });
@@ -188,7 +200,7 @@ function buildAndroid({ version, o, log }) {
   return { apk, dst };
 }
 
-function commitRelease({ version, protocol, artifacts, log }) {
+function commitRelease({ version, build, protocol, artifacts, log }) {
   const staged = git(['add', '-A']);
   if (staged.error) throw staged.error;
   if (git(['diff', '--cached', '--quiet']).status === 0) {
@@ -196,10 +208,12 @@ function commitRelease({ version, protocol, artifacts, log }) {
     return null;
   }
   const body = [
-    `chore(release): 客户端对齐上游 ${version}（桌面目录版 + Android apk）`,
+    `chore(release): 客户端对齐上游 ${version}（build ${build} · 桌面目录版 + Android apk）`,
     '',
-    `上游 Stronghold-Protocol 已发布 ${version}（协议 v${protocol ?? '?'}），本仓库的版本字段同步跟上，并打包出：`,
+    `上游 Stronghold-Protocol 已发布 ${version}（协议 v${protocol ?? '?'}），本仓库的版本字段同步跟上（Android versionCode ${androidVersionCode(version, build)}），并打包出：`,
     ...artifacts.map((a) => `- ${path.relative(CLIENT_ROOT, a).split(path.sep).join('/')}`),
+    '',
+    `客户端构建号 build ${build}（release.json），发到 GitHub Releases 的更新 feed 见 docs/PACKAGING.md §10。`,
     '',
     '由 tools/package-release.mjs 生成（入口 package.bat / package.sh）。',
     '',
@@ -215,7 +229,8 @@ function commitRelease({ version, protocol, artifacts, log }) {
 
 export function parseReleaseArgs(argv) {
   const o = {
-    game: undefined, server: undefined, portable: false, skipInstall: false,
+    game: undefined, server: undefined, feed: undefined, build: undefined, notes: undefined, tag: undefined,
+    repo: undefined, portable: false, skipInstall: false,
     zip: true, android: true, commit: true, test: true, release: false, quiet: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -225,6 +240,11 @@ export function parseReleaseArgs(argv) {
     const val = () => (eq === -1 ? argv[++i] : a.slice(eq + 1));
     if (key === '--game') o.game = val();
     else if (key === '--server') o.server = val();
+    else if (key === '--feed') o.feed = val();
+    else if (key === '--build') o.build = val();
+    else if (key === '--notes') o.notes = val();
+    else if (key === '--tag') o.tag = val();
+    else if (key === '--repo') o.repo = val();
     else if (key === '--portable') o.portable = true;
     else if (key === '--skip-install') o.skipInstall = true;
     else if (key === '--no-zip') o.zip = false;
@@ -242,26 +262,34 @@ export function parseReleaseArgs(argv) {
 export function release(o = {}) {
   const log = o.quiet ? () => {} : console.log;
 
-  const gameRoot = findGameRoot({ cli: o.game, clientRoot: CLIENT_ROOT, config: loadConfig() });
+  const config = loadConfig();
+  const gameRoot = findGameRoot({ cli: o.game, clientRoot: CLIENT_ROOT, config });
   const version = readAppVersion(gameRoot);
   if (!version) throw new Error(`${gameRoot}/shared/constants.js 里读不到 APP_VERSION`);
   const protocol = readProtocolVersion(gameRoot);
   log(`package-release: 上游 ${path.relative(CLIENT_ROOT, gameRoot) || gameRoot} —— 版本 ${version}，协议 v${protocol ?? '?'}`);
 
-  const changed = alignVersions(version);
+  // This build's identity: what an installed client compares against the published feed (tools/release-meta.mjs).
+  // Bumped before the build so the APK carries the new Gradle versionCode; release.json is only written once the
+  // artifacts are actually there (a failed build must not burn a build number).
+  const build = nextBuild(o.build);
+  log(`package-release: 客户端构建号 build ${build}（Android versionCode ${androidVersionCode(version, build)}）`);
+
+  const changed = alignVersions(version, build);
   log(changed.length
     ? `package-release: 版本号对齐 → ${changed.join('、')}`
-    : `package-release: 版本号已是 ${version}`);
+    : `package-release: 版本号已是 ${version}（build ${build}）`);
 
   if (o.test) {
     log('package-release: 先跑一遍测试（--no-test 可跳过）…');
     run(process.execPath, ['--test']);
   }
 
-  const built = buildDesktop({ server: o.server, gameRoot: o.game, portable: o.portable, skipInstall: o.skipInstall });
+  const built = buildDesktop({ server: o.server, gameRoot: o.game, feed: o.feed, portable: o.portable, skipInstall: o.skipInstall });
   const dist = path.join(CLIENT_ROOT, 'build', 'dist');
   fs.mkdirSync(dist, { recursive: true });
   const artifacts = [];
+  let winZip = null;
   const unpacked = path.join(CLIENT_ROOT, 'build', 'desktop', 'win-unpacked');
   if (fs.existsSync(unpacked)) {
     log(`package-release: 桌面目录版 ${mb(dirBytes(unpacked))} → build/desktop/win-unpacked/`);
@@ -269,6 +297,7 @@ export function release(o = {}) {
       const zipPath = path.join(dist, `StrongholdProtocol-${version}-win-x64.zip`);
       log('package-release: 正在压缩（这会花上一会儿）…');
       zipDir(unpacked, zipPath);
+      winZip = zipPath;
       artifacts.push(zipPath);
       log(`package-release: ${path.relative(CLIENT_ROOT, zipPath).split(path.sep).join('/')} —— ${mb(fs.statSync(zipPath).size)}`);
     }
@@ -289,22 +318,66 @@ export function release(o = {}) {
     }
   }
 
+  // The build number is now real: remember it in release.json before committing, so a checkout can tell which
+  // build these artifacts are, and the next release counts up from here.
+  writeRelease(build);
+
+  const repo = String(o.repo ?? config.update?.repo ?? '').trim();
+  const tag = String(o.tag ?? '').trim() || releaseTag(version, build);
+  let feed = null;
+  if (!repo) {
+    log('package-release: client.config.json 没配 update.repo —— 跳过更新 feed（latest.json）');
+  } else {
+    // The feed is what an installed client polls (docs/PACKAGING.md §10). Its asset URLs point at the release this
+    // very build will be published as, so publish with the same --tag (tools/publish-release.mjs reads it back).
+    // The default note is the upstream version + commit, not upstream's last commit *subject*: that is a game-dev
+    // line ("feedback5: … §25.22.9 …") and this text is shown to players in the update row. --notes overrides it.
+    const notes = String(o.notes ?? '').trim()
+      || `上游 Stronghold-Protocol ${version}（${String(built.game?.commit ?? '').slice(0, 8) || '?'}）`;
+    const assets = {
+      win: assetEntry(winZip),
+      android: assetEntry(android?.dst),
+    };
+    feed = buildLatestFeed({
+      version, build, protocol, tag, repo, notes, assets,
+      gameCommit: built.game?.commit ? String(built.game.commit) : null,
+    });
+    const feedPath = path.join(dist, 'latest.json');
+    fs.writeFileSync(feedPath, JSON.stringify(feed, null, 2) + '\n');
+    artifacts.push(feedPath);
+    log(`package-release: 更新 feed → build/dist/latest.json（tag ${tag}）`);
+  }
+
   let commit = null;
   if (o.commit) {
-    commit = commitRelease({ version, protocol, artifacts, log });
+    commit = commitRelease({ version, build, protocol, artifacts, log });
     if (commit) log(`package-release: 已提交 ${commit}`);
   }
 
-  log(`\npackage-release: 完成 —— 版本 ${version}`);
+  log(`\npackage-release: 完成 —— 版本 ${version}，build ${build}${feed ? `，tag ${tag}` : ''}`);
   for (const a of artifacts) log(`  ${path.relative(CLIENT_ROOT, a).split(path.sep).join('/')}`);
-  return { version, protocol, gameRoot, changed, artifacts, android, commit };
+  if (feed) {
+    log('\npackage-release: 发布（上传安装包 + latest.json 到 GitHub Releases）:');
+    log(`  node tools/publish-release.mjs${o.tag ? ` --tag ${tag}` : ''}`);
+    log(`  发布后客户端轮询：${config.update?.feed ?? ''}`);
+  }
+  return { version, protocol, build, tag, gameRoot, changed, artifacts, android, feed, commit };
+}
+
+/** `{name, sha256, size}` for one artifact — the shape buildLatestFeed() publishes. Null when there is no artifact. */
+function assetEntry(file) {
+  if (!file || !fs.existsSync(file)) return null;
+  const size = fs.statSync(file).size;
+  return { name: path.basename(file), sha256: sha256File(file), size };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const o = parseReleaseArgs(process.argv.slice(2));
   if (o.help) {
-    console.log('usage: node tools/package-release.mjs [--game <checkout>] [--server <addr>] [--portable] [--no-zip]');
-    console.log('                                        [--skip-android] [--release] [--no-commit] [--no-test] [--skip-install]');
+    console.log('usage: node tools/package-release.mjs [--game <checkout>] [--server <addr>] [--feed <url>]');
+    console.log('                                        [--build <n>] [--notes <text>] [--tag <tag>] [--repo <owner/name>]');
+    console.log('                                        [--portable] [--no-zip] [--skip-android] [--release]');
+    console.log('                                        [--no-commit] [--no-test] [--skip-install]');
   } else {
     release(o);
   }

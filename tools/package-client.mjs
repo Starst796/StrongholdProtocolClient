@@ -24,12 +24,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
-  DATA_SHIM_JS, GAME_MOUNTS, SERVER_MOUNT, SERVER_NODE_BUILTINS, SERVER_PRIVATE, SIM_PRIVATE,
+  DATA_SHIM_JS, GAME_MOUNTS, PACK_INDEX_FILE, SERVER_MOUNT, SERVER_NODE_BUILTINS, SERVER_PRIVATE, SERVER_PRIVATE_DIRS,
+  SIM_PRIVATE,
   findGameRoot, readAppVersion, readProtocolVersion, verifyGameContract,
 } from './game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
+import { CLIENT_ROOT, androidVersionCode, readRelease } from './release-meta.mjs';
 
-export const CLIENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export { CLIENT_ROOT };
 export const DEFAULT_SERVER = 'localhost:3000';
 export const DEFAULT_OUT = path.join(CLIENT_ROOT, 'build', 'client', 'www');
 export const CONFIG_FILE = path.join(CLIENT_ROOT, 'client.config.json');
@@ -42,10 +44,14 @@ const EMPTY_LOCAL_ART = JSON.stringify({ version: 1, source: 'none', count: 0, g
  *            net.js / lobby.js / match engine. server/match/* import `../sim/...`, which resolves to /server/sim/*
  *            inside the payload (the engine reads game data through the generated /server/data.js), so server/sim is
  *            mirrored here too; the browser client keeps using its own /sim mount (public/js/battle/runner.js).
+ *            The node:http layer (server/http/**, SERVER_PRIVATE_DIRS) and the pack registry are left out: a
+ *            packaged client serves its files itself and ships a generated /packs/index.json instead.
  */
 const MOUNT_KEEP = {
   sim: (rel) => rel.endsWith('.js') && !SIM_PRIVATE.includes(path.basename(rel).toLowerCase()),
-  server: (rel) => rel.endsWith('.js') && !SERVER_PRIVATE.includes(rel.toLowerCase()),
+  server: (rel) => rel.endsWith('.js')
+    && !SERVER_PRIVATE.includes(rel.toLowerCase())
+    && !SERVER_PRIVATE_DIRS.some((dir) => rel.toLowerCase().startsWith(`${dir}/`)),
 };
 
 /** client.config.json (gameRoot pointer, defaults) — a missing file is fine. */
@@ -100,6 +106,9 @@ export function assembleClient(opts = {}) {
   const config = loadConfig();
   const gameRoot = path.resolve(opts.gameRoot ?? findGameRoot({ clientRoot: CLIENT_ROOT, config }));
   const server = String(opts.server ?? config.defaultServer ?? DEFAULT_SERVER).trim() || DEFAULT_SERVER;
+  // The update feed the shell may poll (docs/PACKAGING.md §10). Empty = the clients make no update request at all,
+  // which is the default for a fork that publishes nowhere.
+  const feed = String(opts.feed ?? config.update?.feed ?? '').trim();
   const offline = !!opts.offline;
   const out = path.resolve(opts.out ?? DEFAULT_OUT);
 
@@ -109,7 +118,7 @@ export function assembleClient(opts = {}) {
   let copied = 0;
   // Files the payload does not mirror but *derives*: the generated ones (shim, server address, provenance) and the
   // patched ones (see tools/payload-patches.mjs). Skipping them here keeps the patch from stacking on itself.
-  const DERIVED = new Set(['data.js', 'server/data.js', 'js/runtime-config.js', 'build.json', ...PATCHED_FILES]);
+  const DERIVED = new Set(['data.js', 'server/data.js', 'js/runtime-config.js', 'build.json', PACK_INDEX_FILE, ...PATCHED_FILES]);
 
   /** Mirror one source tree into the payload; every mirrored path is recorded in `expected`. */
   const mirror = (relSrc, relDst, keep = null) => {
@@ -172,16 +181,26 @@ export function assembleClient(opts = {}) {
   const localArt = path.join(out, 'data', 'local-assets.json');
   if (fs.existsSync(localArt)) expected.add(path.resolve(localArt));
   else writeGenerated(path.join('data', 'local-assets.json'), EMPTY_LOCAL_ART + '\n');
-  // The packaged client's server address (read by public/js/net.js) and the offline flag (read by /offline/bootstrap.js).
-  writeGenerated('js/runtime-config.js', runtimeConfigSource(server, offline));
+  // The packaged client's server address (read by public/js/net.js), the offline flag (read by /offline/bootstrap.js)
+  // and the update feed (read by /js/shell/picker.js).
+  writeGenerated('js/runtime-config.js', runtimeConfigSource(server, offline, feed));
+  // /packs/index.json — the content-pack list (0.2.0). The real server answers it from a live registry
+  // (server/packs.js, re-read when a pack changes); a static host cannot, so the game's own tool writes the same
+  // JSON here — exactly what its release zip does (see tools/packs.mjs / docs/PACKS.md). A checkout too old to have
+  // the tool simply ships no index, and the client falls back to its built-in strings.
+  writePackIndex({ gameRoot, out, writeGenerated, warn });
   // The shell's pre-game server picker, its pure rules, and the display tweaks for short screens (see shell/).
   // Client-repo only: the browser build has neither file, its server is always its own origin and its HUD is the
   // one the game repo ships.
   for (const [name, rel] of SHELL_FILES) writeGenerated(rel, shellSource(name));
   // What this payload was built from — the packaged clients report it (update checks, bug reports). Deliberately
-  // free of timestamps so an unchanged payload stays byte-identical (and therefore incremental).
+  // free of timestamps so an unchanged payload stays byte-identical (and therefore incremental). `client` is *this*
+  // repo's release identity: the build counter is what an update check compares (see tools/release-meta.mjs).
   const game = gameInfo(gameRoot);
-  writeGenerated('build.json', JSON.stringify({ server, game }, null, 2) + '\n');
+  const release = readRelease();
+  const version = String(JSON.parse(fs.readFileSync(path.join(CLIENT_ROOT, 'package.json'), 'utf8')).version || '');
+  const client = { version, build: release.build, versionCode: androidVersionCode(version, release.build) };
+  writeGenerated('build.json', JSON.stringify({ server, game, client, feed }, null, 2) + '\n');
 
   // Derive the patched files into the payload (from the pristine source — never touches the game checkout).
   const patched = opts.skipPatches ? [] : applyPayloadPatch({ gameRoot, payloadRoot: out, patchFile: opts.patchFile });
@@ -218,29 +237,53 @@ export function assembleClient(opts = {}) {
   const missingAssets = !fs.existsSync(path.join(out, 'assets', 'char'));
   if (missingAssets) warn('package-client: public/assets 不完整 —— 先跑 `npm run assets`（打包客户端从本地读素材）');
   fs.writeFileSync(path.join(path.dirname(out), 'manifest.json'), JSON.stringify({
-    server, game, out: path.relative(CLIENT_ROOT, out).split(path.sep).join('/'), files, bytes, generatedAt: new Date().toISOString(),
+    server, game, client, out: path.relative(CLIENT_ROOT, out).split(path.sep).join('/'), files, bytes, generatedAt: new Date().toISOString(),
   }, null, 2) + '\n');
 
   const commit = game.commit ? game.commit.slice(0, 8) : '(no git)';
-  log(`package-client: ${path.relative(CLIENT_ROOT, out) || out} —— ${files} 个文件, ${(bytes / 1048576).toFixed(1)} MB, 服务器 ${server}, 游戏 ${game.describe || game.app || '?'} (${commit}${game.dirty ? ', dirty' : ''}), 补丁 ${patched.length} 文件 (${copied} written, ${removed} removed)`);
-  return { out, gameRoot, server, game, files, bytes, copied, removed, patched, missingAssets };
+  log(`package-client: ${path.relative(CLIENT_ROOT, out) || out} —— ${files} 个文件, ${(bytes / 1048576).toFixed(1)} MB, 服务器 ${server}, 游戏 ${game.describe || game.app || '?'} (${commit}${game.dirty ? ', dirty' : ''}), 客户端 build ${client.build}, 补丁 ${patched.length} 文件 (${copied} written, ${removed} removed)`);
+  return { out, gameRoot, server, game, client, feed, files, bytes, copied, removed, patched, missingAssets };
 }
 
 /**
  * Body of the rewritten /js/runtime-config.js. `__SP_SERVER__` is the packaged client's server address (read by
  * public/js/net.js); `__SP_OFFLINE__` makes a browser build boot into the in-page single-player server by default
- * (read by offline/bootstrap.js — the shell picker's `sp.shell.mode` overrides it).
+ * (read by offline/bootstrap.js — the shell picker's `sp.shell.mode` overrides it); `__SP_UPDATE_FEED__` is the
+ * update feed the picker may poll (read by shell/picker.js — empty means the client never asks).
  */
-export function runtimeConfigSource(server, offline = false) {
+export function runtimeConfigSource(server, offline = false, feed = '') {
   return `// Generated by tools/package-client.mjs — do not edit (the game repo ships no such file).
 globalThis.__SP_SERVER__ = ${JSON.stringify(server)};
 globalThis.__SP_OFFLINE__ = ${offline ? 'true' : 'false'};
+globalThis.__SP_UPDATE_FEED__ = ${JSON.stringify(feed)};
 `;
 }
 
+/**
+ * Write the payload's /packs/index.json by running the game repo's own pack indexer (`node tools/packs.mjs index`).
+ * The index is generated against the payload's *contents* only in the sense that it lists what the checkout holds —
+ * public/i18n/<code>.json and packs/<id>/pack.json — and the payload mirrors both mounts, so every URL it names
+ * resolves. A checkout without the tool (0.1.x) gets no index and a warning; the client falls back.
+ */
+function writePackIndex({ gameRoot, out, writeGenerated, warn }) {
+  const tool = path.join(gameRoot, 'tools', 'packs.mjs');
+  if (!fs.existsSync(tool)) {
+    warn('package-client: 游戏仓库没有 tools/packs.mjs —— 跳过 packs/index.json（语言包列表会退回内置文案）');
+    return null;
+  }
+  const dst = path.join(out, PACK_INDEX_FILE);
+  const r = spawnSync(process.execPath, [tool, 'index', '--out', dst], { cwd: gameRoot, encoding: 'utf8' });
+  if (r.error || r.status !== 0 || !fs.existsSync(dst)) {
+    warn(`package-client: 生成 packs/index.json 失败（${(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n').pop()}）`);
+    return null;
+  }
+  // Read it back so it goes through writeGenerated like every other generated file (mtime-stable rebuilds).
+  writeGenerated(PACK_INDEX_FILE, fs.readFileSync(dst, 'utf8'));
+  return dst;
+}
+
 /** Payload paths of the shell sources: the picker (loaded by the patched index.html before main.js) and the
- * display tweaks (linked as a stylesheet after the game's own CSS). */
-export const SHELL_FILES = [
+ * display tweaks (linked as a stylesheet after the game's own CSS). */export const SHELL_FILES = [
   ['picker.js', 'js/shell/picker.js'],
   ['picker-core.js', 'js/shell/picker-core.js'],
   ['display.css', 'css/shell-display.css'],
@@ -339,7 +382,7 @@ export function assertServerNeedsOnlyShims(payloadRoot) {
 
 /** CLI arguments shared by package-client / package-desktop / package-android. */
 export function parseCommonArgs(argv) {
-  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, offline: false, help: false };
+  const o = { server: undefined, game: undefined, out: undefined, feed: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, offline: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -348,6 +391,8 @@ export function parseCommonArgs(argv) {
     if (key === '--server') o.server = val();
     else if (key === '--game') o.game = val();
     else if (key === '--out') o.out = val();
+    // Override the update feed from client.config.json (docs/PACKAGING.md §10): a staging feed, or a local one.
+    else if (key === '--feed') o.feed = val();
     else if (key === '--quiet') o.quiet = true;
     else if (key === '--release') o.release = true;
     // `--dir` is the desktop default now; still accepted so older command lines keep working.
@@ -364,6 +409,6 @@ export function parseCommonArgs(argv) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const o = parseCommonArgs(process.argv.slice(2));
-  if (o.help) console.log('usage: node tools/package-client.mjs [--server <address>] [--game <checkout>] [--out <dir>] [--offline] [--quiet]');
-  else assembleClient({ server: o.server, gameRoot: o.game, out: o.out, offline: o.offline, log: o.quiet ? () => {} : console.log });
+  if (o.help) console.log('usage: node tools/package-client.mjs [--server <address>] [--game <checkout>] [--out <dir>] [--feed <url>] [--offline] [--quiet]');
+  else assembleClient({ server: o.server, gameRoot: o.game, out: o.out, feed: o.feed, offline: o.offline, log: o.quiet ? () => {} : console.log });
 }

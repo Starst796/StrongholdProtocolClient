@@ -30,7 +30,7 @@ index 82a085e..a0d5287 100644
    <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
    <script>
 diff --git a/public/js/net.js b/public/js/net.js
-index ce2d362..b9afbf8 100644
+index b921a44..84d9743 100644
 --- a/public/js/net.js
 +++ b/public/js/net.js
 @@ -1,6 +1,8 @@
@@ -43,7 +43,7 @@ index ce2d362..b9afbf8 100644
  // - Auto-reconnect with exponential backoff + jitter; a heartbeat (`ping`) measures latency and
  //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
  //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
-@@ -92,11 +94,89 @@ export function backoffDelay(attempt, rand = Math.random) {
+@@ -93,11 +95,89 @@ export function backoffDelay(attempt, rand = Math.random) {
  }
  
  /**
@@ -135,24 +135,11 @@ index ce2d362..b9afbf8 100644
    if (!loc || !loc.host) return 'ws://localhost:3000/ws';
    return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
  }
-diff --git a/public/js/screens/lobby.js b/public/js/screens/lobby.js
-index 9e3afb2..0565a0d 100644
---- a/public/js/screens/lobby.js
-+++ b/public/js/screens/lobby.js
-@@ -10,7 +10,7 @@
- // plays 战场#01, 险境 draws one of 8, 绝境 / 终极 one of 7 (m01 excluded).
- 
- import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
--import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, modeIdFor } from '../../../shared/constants.js';
-+import { ERR, DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, modeIdFor } from '../../../shared/constants.js';
- import { html, Button, Icon, MicroLabel, Panel, TextField, PingPill, AvatarFrame, Tooltip, Spinner, DifficultyIcon, doctorNo } from '../ui/components.js';
- import { toast, toastError } from '../ui/toasts.js';
- import { GuideButton } from '../ui/guide.js';
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index 23c9c57..b1d2c56 100644
+index 26fe4a2..e38a105 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
-@@ -19,7 +19,7 @@ import { toast, toastError } from '../ui/toasts.js';
+@@ -20,7 +20,7 @@ import { toast, toastError } from '../ui/toasts.js';
  import { copyText } from '../ui/clipboard.js';
  import { GuideButton } from '../ui/guide.js';
  import { LoadoutButton } from './loadout.js';
@@ -160,8 +147,8 @@ index 23c9c57..b1d2c56 100644
 +import { net, resolveServerTarget, toHttpUrl } from '../net.js';
  import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
  import { difficultyInfo } from './lobby.js';
- 
-@@ -67,10 +67,11 @@ export function roomFacts(room, myId) {
+ import { t, tc } from '../../../shared/i18n.js';
+@@ -69,10 +69,11 @@ export function roomFacts(room, myId) {
    };
  }
  

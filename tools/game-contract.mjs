@@ -1,10 +1,15 @@
 // The client build reads a checkout of the game repo (Stronghold-Protocol) and flattens its mount layout into one
-// static payload. Two values are duplicated here instead of imported from the game repo, because importing
-// server/index.js would pull in `ws` and require `npm install` in the game checkout:
+// static payload. Two values are duplicated here instead of imported from the game repo, because importing the
+// server modules would pull in `ws` / `node:http` and require `npm install` in the game checkout:
 //
 //   * DATA_SHIM_JS — the browser stand-in for server/data.js, which the payload must serve as /data.js
 //     (the sim's content modules import `../../../data.js` in the browser);
 //   * SIM_PRIVATE  — the Node-only files under server/sim that must never be shipped.
+//
+// 0.1.x declared both in server/index.js; 0.2.0 split that file into server/http/*, and they now live in
+// server/http/static.js (CONTRACT_FILE below). The offline payload mirrors `server/` so the in-page server can
+// import the real net.js / lobby.js / match engine — but not the HTTP layer, which a packaged client replaces with
+// its own static file server (see SERVER_PRIVATE_DIRS).
 //
 // verifyGameContract() re-reads both from the checkout on every build and fails on any drift, so they can never go
 // silently stale. test/packaging.test.js runs the same check.
@@ -25,12 +30,22 @@ export function resetData() {}
 export const SIM_PRIVATE = Object.freeze(['nodedata.js']);
 
 /**
- * server/ files the offline payload never ships, as server-relative paths (lower-case): index.js (node:http/fs
+ * server/ files the offline payload never ships, as server-relative paths (lower-case): index.js (the node:http
  * entry), data.js (replaced by the browser stand-in generated from offline/data-provider.js), sim/nodeData.js
- * (Node-only sim loader) and match/StubMatch.js (the platform test double). Nested `index.js` files (e.g.
+ * (Node-only sim loader), match/StubMatch.js (the platform test double) and packs.js (the content-pack registry is
+ * a serving concern — the payload ships the generated /packs/index.json instead). Nested `index.js` files (e.g.
  * sim/content/index.js) are real modules and must ship.
  */
-export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js']);
+export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js', 'packs.js']);
+
+/**
+ * server/ subtrees the payload never ships: `http/` is the whole node:http layer (config, static files, MIME,
+ * ranges, gzip, the WebSocket upgrade, routes, boot), which exists to serve a browser over the network — the one
+ * job a packaged client delegates to its own shell (Electron's serve.mjs, the Android host, Capacitor's WebView).
+ * Its modules import node:http / node:zlib / node:fs, none of which the payload's import map provides, so keeping
+ * them would only produce dead files that could never load.
+ */
+export const SERVER_PRIVATE_DIRS = Object.freeze(['http']);
 
 /**
  * The server/ subtree the offline payload mirrors into /server/ for the in-page server (net.js, lobby.js, match/**,
@@ -46,13 +61,32 @@ export const SERVER_NODE_BUILTINS = Object.freeze(['node:crypto', 'node:net']);
 /** Files that identify a Stronghold-Protocol checkout. */
 export const GAME_MARKERS = Object.freeze(['public/index.html', 'shared/constants.js', 'server/index.js', 'server/sim/simdata.js']);
 
-/** Game-repo paths the payload mirrors (same mounts as server/index.js); the sim mount is filtered by the caller. */
+/** Game-repo paths the payload mirrors (same mounts as the server); the sim mount is filtered by the caller. */
 export const GAME_MOUNTS = Object.freeze([
   { src: 'public', dst: '' },
   { src: 'data', dst: 'data' },
   { src: 'shared', dst: 'shared' },
   { src: 'server/sim', dst: 'sim' },
+  // Content packs (0.2.0, docs/PACKS.md): the language packs of public/i18n (mirrored with public/) plus any folder
+  // pack here. The live index the server would answer at /packs/index.json is generated at packaging time (see
+  // tools/package-client.mjs writePackIndex) — a static host cannot run the registry.
+  { src: 'packs', dst: 'packs' },
 ]);
+
+/**
+ * The contract file: where the game declares DATA_SHIM_JS / SIM_PRIVATE. 0.1.x had them in server/index.js; 0.2.0
+ * split that into server/http/* and moved both here. Only these two declarations are read out of it — the module
+ * itself is never imported (it would need node:http and the checkout's node_modules).
+ */
+export const CONTRACT_FILE = 'server/http/static.js';
+/** Pack index the payload ships as a static file (`node tools/packs.mjs index` writes the same JSON). */
+export const PACK_INDEX_FILE = 'packs/index.json';
+
+/**
+ * Where the game keeps the MIME table the desktop shell mirrors (serving the payload with the game's own types).
+ * Moved from server/index.js to server/http/files.js in the 0.2.0 split.
+ */
+export const MIME_FILE = 'server/http/files.js';
 
 /** PROTOCOL_VERSION from the game's shared/constants.js (the wire-format gate checked in `hello`). */
 export function readProtocolVersion(gameRoot) {
@@ -67,15 +101,15 @@ export function readAppVersion(gameRoot) {
 }
 
 /**
- * Read DATA_SHIM_JS / SIM_PRIVATE out of the game's server/index.js source.
+ * Read DATA_SHIM_JS / SIM_PRIVATE out of the game's contract file (CONTRACT_FILE).
  * @param {string} source
  * @returns {{ shim: string, simPrivate: string[] }}
  */
 export function readGameContract(source) {
   const shim = /export const DATA_SHIM_JS = `([\s\S]*?)`;/.exec(source);
   const priv = /const SIM_PRIVATE = new Set\(\[([^\]]*)\]\)/.exec(source);
-  if (!shim) throw new Error('server/index.js: DATA_SHIM_JS not found — update tools/game-contract.mjs');
-  if (!priv) throw new Error('server/index.js: SIM_PRIVATE not found — update tools/game-contract.mjs');
+  if (!shim) throw new Error(`${CONTRACT_FILE}: DATA_SHIM_JS not found — update tools/game-contract.mjs`);
+  if (!priv) throw new Error(`${CONTRACT_FILE}: SIM_PRIVATE not found — update tools/game-contract.mjs`);
   return {
     shim: shim[1],
     simPrivate: [...priv[1].matchAll(/'([^']+)'|"([^"]+)"/g)].map((m) => (m[1] ?? m[2]).toLowerCase()),
@@ -87,7 +121,8 @@ export function readGameContract(source) {
  * @param {string} gameRoot
  */
 export function verifyGameContract(gameRoot) {
-  const file = path.join(gameRoot, 'server', 'index.js');
+  const file = path.join(gameRoot, CONTRACT_FILE);
+  if (!fs.existsSync(file)) throw new Error(`找不到 ${CONTRACT_FILE} —— 游戏仓库的 server/ 布局变了，更新 tools/game-contract.mjs 的 CONTRACT_FILE`);
   const { shim, simPrivate } = readGameContract(fs.readFileSync(file, 'utf8'));
   if (shim !== DATA_SHIM_JS) {
     throw new Error(`${file}: DATA_SHIM_JS changed upstream — sync it in tools/game-contract.mjs and re-run the tests`);

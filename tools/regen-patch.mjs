@@ -9,8 +9,9 @@
 //   node tools/regen-patch.mjs            # rewrite patches/game-client.patch
 //   node tools/regen-patch.mjs --check     # fail if the current patch would not apply (CI)
 //
-// Besides the client hooks it also carries small upstream fixes the packaged client depends on (e.g. lobby.js'
-// missing ERR import) — the game repo is a fork we must not commit to, so those ride the payload patch too.
+// Besides the client hooks it also carried small upstream fixes the packaged client depended on (the `ERR` import
+// upstream omitted in js/screens/lobby.js) — 0.2.0 imports it itself, so that hook is gone: when upstream fixes
+// something a hook worked around, delete the hook rather than keeping a replacement that no longer matches.
 //
 // Anchors are exact upstream lines; if upstream rewrites one, the replacement throws here (with the anchor), which
 // is the signal to update the hook below. The large defaultWsUrl replacement body lives in
@@ -114,16 +115,6 @@ export function applyHooks(src) {
       '}'),
     'room.js inviteLink');
   out['js/screens/room.js'] = room;
-
-  // js/screens/lobby.js — the spectator error path uses ERR.ROOM_NOT_FOUND / ERR.ALREADY but upstream never imports
-  // ERR, so a failed 观战 throws `ERR is not defined` instead of the friendlier toast. (The game repo is a fork we
-  // must not edit, so the one-line fix rides the payload patch like the other client hooks.)
-  let lobby = out['js/screens/lobby.js'];
-  lobby = replaceOnce(lobby,
-    "import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, modeIdFor } from '../../../shared/constants.js';",
-    "import { ERR, DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, modeIdFor } from '../../../shared/constants.js';",
-    'lobby.js ERR import');
-  out['js/screens/lobby.js'] = lobby;
 
   return out;
 }

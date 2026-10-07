@@ -173,6 +173,55 @@ function registerShortcuts(wc) {
   });
 }
 
+// --- update check (docs/PACKAGING.md §10) ---------------------------------------------------------
+// The picker (shell/picker.js) asks the main process to read the release feed: the feed is not same-origin with the
+// page (http://127.0.0.1:<port>), so a renderer-side fetch would be refused by CORS. Nothing here is trusted beyond
+// fetching text — the picker parses and validates it.
+
+/** How long a feed request may take, and how large the answer may be (a feed is a few hundred bytes). */
+const FEED_TIMEOUT_MS = 6000;
+const FEED_MAX_BYTES = 64 * 1024;
+
+/**
+ * Only hand out URLs a feed is expected to use: https anywhere, http solely on this machine (a locally served test
+ * feed). Mirrors shell/picker-core.js updateUrlOk — duplicated because the shell modules are not inside the asar.
+ */
+function safeUpdateUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url ?? ''));
+  } catch {
+    return null;
+  }
+  if (parsed.protocol === 'https:') return parsed.toString();
+  if (parsed.protocol !== 'http:') return null;
+  const local = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
+  return local ? parsed.toString() : null;
+}
+
+function registerUpdateIpc() {
+  ipcMain.handle('update:check', async (_event, url) => {
+    const target = safeUpdateUrl(url);
+    if (!target) return { ok: false, error: '不支持的地址' };
+    try {
+      const res = await fetch(target, { signal: AbortSignal.timeout(FEED_TIMEOUT_MS), redirect: 'follow' });
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      const text = await res.text();
+      if (text.length > FEED_MAX_BYTES) return { ok: false, error: 'feed too large' };
+      return { ok: true, text };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
+  // The download itself (a few hundred MB) is left to the user's browser: the distributed form is a zip of a folder,
+  // which a running app cannot replace from under itself.
+  ipcMain.handle('update:open', (_event, url) => {
+    const target = safeUpdateUrl(url);
+    if (target) openExternal(target);
+    return !!target;
+  });
+}
+
 // --- open to LAN (integrated host server) ---------------------------------------------------------
 // The packaged client can host: desktop/host-server.mjs runs the real game server in this (Node) process and answers
 // LAN WebSocket connections. It is off until the player opens it from the picker; the address is shared then.
@@ -226,6 +275,7 @@ function registerHostIpc() {
 async function main() {
   buildMenu();
   registerHostIpc();
+  registerUpdateIpc();
   if (insecureTls) log('[client] --insecure-tls: certificate verification is OFF for this run (self-signed servers)');
 
   if (!existsSync(path.join(WWW, 'index.html'))) {

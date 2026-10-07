@@ -376,12 +376,16 @@ package.bat                        :: Windows（双击或命令行都行）
 npm run release                    # 等价，前提是 node 在 PATH 上
 ```
 
-它按顺序做四件事（实现在 `tools/package-release.mjs`）：
+它按顺序做这些事（实现在 `tools/package-release.mjs`）：
 
 1. 从上游 `shared/constants.js` 读 `APP_VERSION`（顺带 `PROTOCOL_VERSION`）；
-2. 把本仓库的版本字段对齐到它：`package.json`（根 / `desktop/` / `mobile/`）、`desktop/package-lock.json` 与 `mobile/package-lock.json` 的根 + `packages[""]`（只动这两处，npm 传递依赖保持原样）、`mobile/android/app/build.gradle` 的 `versionName` 与 `versionCode`（语义化版本换算：`0.1.2` → `102`）；
-3. 跑 `node --test`，再调 `tools/package-desktop.mjs` 出目录版并压成 `build/dist/StrongholdProtocol-<版本>-win-x64.zip`，接着调 `tools/package-android.mjs` 把 APK 拷成 `build/dist/StrongholdProtocol-<版本>-android-debug.apk`；
-4. 在本仓库 `git add -A` + `git commit`（`build/` 已 gitignore，产物不会进库）。
+2. 取下一个**客户端构建号** `build`（`release.json` 里记的数 + 1，可用 `--build N` 指定）；
+3. 把本仓库的版本字段对齐：`package.json`（根 / `desktop/` / `mobile/`）、`desktop/package-lock.json` 与 `mobile/package-lock.json` 的根 + `packages[""]`（只动这两处，npm 传递依赖保持原样）、`mobile/android/app/build.gradle` 的 `versionName`（= 上游版本）与 `versionCode`（**版本码 ×10000 + 构建号**：`0.1.3` + build 12 → `1030012`，见 §14）；
+4. 跑 `node --test`，再调 `tools/package-desktop.mjs` 出目录版并压成 `build/dist/StrongholdProtocol-<版本>-win-x64.zip`，接着调 `tools/package-android.mjs` 把 APK 拷成 `build/dist/StrongholdProtocol-<版本>-android-debug.apk`；
+5. 写 `build/dist/latest.json`（更新 feed，带各产物的 sha256 与大小）并把这次的构建号记进 `release.json`；
+6. 在本仓库 `git add -A` + `git commit`（`build/` 已 gitignore，产物不会进库）。
+
+要发到 GitHub Releases（让已安装的客户端能发现新版本）再跑一次 `node tools/publish-release.mjs`，见 §14。
 
 常用开关：
 
@@ -392,6 +396,8 @@ package.bat --skip-android                # 不打 APK
 package.bat --no-zip                      # 只留 win-unpacked 目录，不压缩
 package.bat --no-test --skip-install      # 赶时间
 package.bat --portable                    # 桌面改出单文件便携 exe
+package.bat --build 7                     # 用指定的构建号重新打（重发 / 补发）
+package.bat --feed http://127.0.0.1:8199/latest.json   # 换一个更新 feed（测试用）
 ```
 
 说明：
@@ -400,3 +406,79 @@ package.bat --portable                    # 桌面改出单文件便携 exe
 - 上游改了 `public/index.html`、`js/net.js`、`js/screens/room.js` 时补丁会先失败（这是设计好的报警）：按 §9 重新生成 `patches/game-client.patch` 再跑。
 - 缺 JDK 17+ / Android SDK 时脚本**跳过 APK 并继续**（只报一句警告）。本机实测可用 `C:\Program Files\Java\jdk-21` 与 `%LOCALAPPDATA%\Android\Sdk`，脚本会自己找。
 - Windows 下 zip 用系统自带的 `tar -a`（bsdtar）；想要更小就自己用 7-Zip 的 LZMA2（见 §4.1）。
+
+## 14. 客户端自动更新（版本检测 + 覆盖安装）
+
+已装出去的 exe / apk 不会自己知道上游又更新了（§1 的"payload 是快照"）。这一节把"**客户端能发现自己旧了，并能直接覆盖安装**"补齐。
+
+### 14.1 客户端凭什么知道自己旧了：构建号
+
+上游长时间停在同一个 `APP_VERSION`（0.1.3 走过 bce1827、6471511、…；0.2.0 同理），所以版本号本身分不出两次打包。本仓库因此**自带一个只增不减的构建号**：
+
+| 位置 | 内容 | 谁写 |
+|---|---|---|
+| `release.json` | `{ "build": 12 }` | `tools/package-release.mjs`（每次发版 +1） |
+| `mobile/android/app/build.gradle` | `versionCode 1030012` = 版本码 ×10000 + build | 同上（`tools/release-meta.mjs` 的 `androidVersionCode`） |
+| payload `build.json` | `client: { version, build, versionCode }` + `feed` | `tools/package-client.mjs` |
+| payload `js/runtime-config.js` | `globalThis.__SP_UPDATE_FEED__` | 同上（来自 `client.config.json`） |
+
+`versionCode` 只依赖"版本码 ×10000 + build"这一个公式，所以永远单调上升：升版本一定压过上一个版本的所有 build，同版本内 build 递增——**Android 才允许覆盖安装**（卸载才会丢掉玩家的 localStorage 存档）。
+
+### 14.2 更新源：GitHub Releases
+
+`client.config.json` 里配：
+
+```json
+{
+  "update": {
+    "repo": "Starst796/StrongholdProtocolClient",
+    "feed": "https://github.com/Starst796/StrongholdProtocolClient/releases/latest/download/latest.json"
+  }
+}
+```
+
+- `feed` 会被写进 payload；**留空则客户端完全不发更新请求**（fork 默认不带自己的源时用得上）。
+- feed（`latest.json`）由 `package-release` 生成在 `build/dist/`，内容：`schema / version / build / versionCode / tag / protocol / gameCommit / publishedAt / notes` + 各平台 `{ name, url, sha256, size }`。
+- `releases/latest/download/...` 这个别名只指向**最近一个正式发布**（不是 draft、不是 prerelease），所以每次都必须按正式发布上传。
+
+### 14.3 发布：`tools/publish-release.mjs`
+
+```bash
+node tools/package-release.mjs            # 打 RELEASE（含 latest.json 与 release.json）
+node tools/publish-release.mjs            # 上传到 GitHub Releases（读 latest.json 里的 tag / 文件名 / sha256）
+node tools/publish-release.mjs --dry-run  # 先看要传什么
+```
+
+- 需要 token：`GITHUB_TOKEN` / `GH_TOKEN`（classic PAT 的 `repo`，或 fine-grained 的 Contents 读写）。**只从环境变量读，不落库**。
+- tag 形如 `v0.2.0-b1`；同名 tag 已存在时复用那个 release 并**替换同名附件**（补发用）。
+- 上传前会核对文件大小与 `latest.json` 是否一致，免得 feed 指向一个 sha256 对不上的包。
+- 发布后自检：`curl -sSL https://github.com/<repo>/releases/latest/download/latest.json` 里应能看到刚发的 `build`。
+
+### 14.4 客户端看到什么、点了做什么
+
+主页（选择模式）底部出现一行「有新版本 · 0.2.0 · build 13 · 64715116 · 下载 217.2 MB」，两个按钮：
+
+| 平台 | 「下载并安装 / 打开下载页」 | 说明 |
+|---|---|---|
+| Android | 原生插件 [`AppUpdatePlugin.java`](mobile/android/app/src/main/java/site/starst/stronghold/update/AppUpdatePlugin.java)：流式下载到 `cacheDir/update/`（**边下边算 sha256**，校验不过直接删）→ FileProvider `content://` → 系统安装器 | 系统会弹一次确认（Android 不允许静默安装）；签名一致 + versionCode 递增 ⇒ **覆盖安装，存档不丢**。没授权时提示去「安装未知应用」设置页 |
+| 桌面 | 用系统浏览器打开该 release 的资源 URL | 当前分发形态是"目录版 + zip"，运行中的程序替换不了自己的文件，所以到此为止（想真自动更新要换 NSIS 安装器 + electron-updater，见 §4.1） |
+
+「忽略此版本」把 `sp.shell.skipUpdate = <build>` 记进 localStorage：这一版不再提示，等**更新的** build 出现再说。
+
+实现要点：
+- feed 与页面**不同源**（页面在 `http://127.0.0.1:47821` / `https://localhost`），渲染进程直接 `fetch` 会被 CORS 拒绝。所以桌面走主进程（`update:check`，`desktop/main.mjs`）、Android 走原生（`AppUpdate.check`），**只有纯网页版**退化成页面 fetch（取不到就算了，不影响游戏）。
+- 纯规则（`parseLatestFeed` / `updateVerdict` / `updateAsset` / `updateLabel` / `updateUrlOk`）在 [`shell/picker-core.js`](shell/picker-core.js)，由 `test/update.test.js` 钉住：坏 JSON、HTML 页面、未来 schema、缺 sha256、明文 http 的非本机地址、比本机更旧的 feed——一律读成"没有更新信息"，绝不弹错误也绝不引导下载。
+- 只在 `https`（或本机 `http`）上下载；sha256 必须匹配；安装的路径必须是插件自己下载的那一个。
+
+### 14.5 本地怎么验证（不碰真发布）
+
+```bash
+# 1) 起一个假 feed（自带 sha256 正确的小体积假安装包）
+node <本会话>/update-check/feed-server.mjs --port 8199 --build 1
+# 2) 用这个 feed 打一份 payload
+node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json
+# 3) 起壳并挂 CDP，检查提示行 / 忽略 / 重载后仍忽略 / 打开下载页
+desktop\node_modules\electron\dist\electron.exe . --remote-debugging-port=9222
+```
+
+`--build 0` 的 feed 必须被拒绝（比本机旧），`--empty` 的 feed 必须静默——这两条也在 `test/update.test.js` 里。

@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 import site.starst.stronghold.host.HostServerPlugin;
+import site.starst.stronghold.update.AppUpdatePlugin;
 
 /**
  * The game window: full screen, edge to edge.
@@ -47,6 +48,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Registered before super.onCreate(): Capacitor collects plugins while the bridge is being built.
         registerPlugin(HostServerPlugin.class);
+        registerPlugin(AppUpdatePlugin.class);
         super.onCreate(savedInstanceState);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         applyImmersive();

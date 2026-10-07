@@ -27,9 +27,11 @@ import { toHttpUrl, toWsUrl } from '../net.js';
 // (this file is copied as /js/shell/picker.js, so ../../shared/constants.js is the payload's /shared/constants.js).
 import { APP_VERSION, PROTOCOL_VERSION } from '../../shared/constants.js';
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_HOST_PORT, K_LIST, K_MODE, K_SERVER, NAME_MAX, HOST_PORT_DEFAULT,
-  PROBE_HELLO, addressError, ambiguousScheme, autostartOn, cleanName, customFrom, hostPortError, hostPortValue, isAndroidUA,
-  parseProbeReply, serverName, shouldShowPicker, versionLabel, versionMismatchHint, versionVerdict,
+  BUILTIN_SERVERS, FEED_TIMEOUT_MS, K_AUTOSTART, K_CHOSEN, K_HOST_PORT, K_LIST, K_MODE, K_SERVER, K_SKIP_UPDATE,
+  NAME_MAX, HOST_PORT_DEFAULT,
+  PROBE_HELLO, addressError, ambiguousScheme, autostartOn, cleanName, customFrom, hostPortError, hostPortValue,
+  isAndroidUA, parseLatestFeed, parseProbeReply, serverName, shouldShowPicker, updateAsset, updateLabel,
+  updatePlatform, updateVerdict, versionLabel, versionMismatchHint, versionVerdict,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -90,6 +92,81 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 function customServers() {
   return customFrom(readItem(K_LIST, 'localStorage'));
 }
+
+// ---- update check ----------------------------------------------------------------------------------------------
+//
+// A packaged client can be told that a newer build exists (docs/PACKAGING.md §10): the payload carries a feed URL
+// (runtime-config.js, from client.config.json), the picker polls it once per page load and — when the published
+// build number is higher than this build's (build.json) — offers to install it.
+//
+// Everything here is best-effort. Offline, a captive portal answering with HTML, a feed from a schema this client
+// does not know: all of it ends as "no update information", never as an error screen or a blocked game.
+
+/** `{ feed, platform }` when a newer build is offered, null otherwise. Memoised: F2 can reopen the picker. */
+let updateLookup = null;
+
+/** Text out of a shell's feed reply (`{ ok, text }`), or null when the shell reported a failure. */
+function feedTextOf(reply) {
+  if (typeof reply === 'string') return reply;
+  if (!reply || reply.ok === false) return null;
+  return typeof reply.text === 'string' ? reply.text : null;
+}
+
+/** This client's own build: /build.json, written by tools/package-client.mjs. */
+async function localIdentity() {
+  try {
+    const res = await fetch('build.json', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const client = (await res.json())?.client ?? {};
+    const build = Number(client.build);
+    // A payload built before the build counter existed has no `client` block: that is build 0, i.e. older than
+    // anything published — not "unknown", which would keep those installs from ever learning about an update.
+    return {
+      version: String(client.version ?? ''),
+      build: Number.isFinite(build) ? build : 0,
+      versionCode: Number(client.versionCode),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The feed, through whichever channel this shell has. It is not same-origin with the page, so a renderer-side fetch
+ * would be refused by CORS: the desktop shell reads it in Electron's main process (preload `__SP_UPDATE__.check`)
+ * and the phone reads it in its own plugin (Capacitor `AppUpdate.check`). Only the plain web build falls back to
+ * fetch — where a CORS-less host refuses and the client simply learns nothing.
+ */
+async function readFeed(url) {
+  try {
+    const desktop = globalThis.__SP_UPDATE__;
+    if (typeof desktop?.check === 'function') return parseLatestFeed(feedTextOf(await desktop.check(url)));
+    const plugin = globalThis.Capacitor?.Plugins?.AppUpdate;
+    if (typeof plugin?.check === 'function') return parseLatestFeed(feedTextOf(await plugin.check({ url })));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FEED_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      return res.ok ? parseLatestFeed(await res.text()) : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Poll the feed (once per page load) and decide whether this client is behind. */
+async function fetchUpdate() {
+  const url = String(globalThis.__SP_UPDATE_FEED__ ?? '').trim();
+  if (!url) return null; // no feed baked in: make no request at all
+  const platform = updatePlatform(globalThis.navigator?.userAgent);
+  const [local, feed] = await Promise.all([localIdentity(), readFeed(url)]);
+  if (updateVerdict(local, feed) !== 'newer') return null;
+  return { feed, platform };
+}
+
+const lookupUpdate = () => (updateLookup ??= fetchUpdate());
 
 /** Every entry the picker lists, de-duplicated on the normalised socket URL. */
 export function serverList() {
@@ -282,6 +359,10 @@ const CSS = `
 .sp-pick__lanhead{font-size:13px;color:#cdd7d3}
 .sp-pick__lanhead b{color:#4ed8af}
 .sp-pick__lanbtns{display:flex;gap:8px}
+.sp-pick__upd{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid #2f5c4a;border-radius:10px;background:#101b17}
+.sp-pick__upd[hidden]{display:none}
+.sp-pick__updhead{font-size:13px;color:#cdd7d3}
+.sp-pick__updhead b{color:#4ed8af}
 .sp-pick__lanrow{display:flex;flex:1 1 100%;align-items:center;gap:8px}
 .sp-pick__port{flex:0 0 88px;text-align:center}
 .sp-pick__lan .sp-pick__note{flex:1 1 100%}
@@ -313,6 +394,7 @@ const CSS = `
   .sp-pick__card{min-height:42px;padding:8px 10px;gap:8px;border-radius:8px}
   .sp-pick__name{font-size:13px}
   .sp-pick__addr,.sp-pick__state,.sp-pick__opt,.sp-pick__hint,.sp-pick__note{font-size:11px}
+  .sp-pick__updhead{font-size:11px}
   .sp-pick__in{padding:8px 10px;font-size:12px}
   .sp-pick__port{flex:0 0 66px}
   .sp-pick__btn{padding:8px 11px;font-size:12px}
@@ -347,6 +429,103 @@ function mount() {
   const hostAddr = (s = hostState) => (s.addresses && s.addresses[0] ? `${s.addresses[0]}:${s.port}` : `127.0.0.1:${s.port}`);
   /** The port typed on the 创建服务器 screen: remembered, and '' means "自动" (the OS picks a free one). */
   const readHostPort = () => readItem(K_HOST_PORT, 'localStorage') ?? String(HOST_PORT_DEFAULT);
+
+  // ---- update row -----------------------------------------------------------------------------------------------
+  // undefined = not looked up yet; null = nothing newer (or the player ignored this build); { feed, platform } = offer.
+  let updateOffer;
+
+  /** Open a download page in the system browser: the desktop shell through its main process, the web in a new tab. */
+  async function openUrl(url) {
+    try {
+      if (typeof globalThis.__SP_UPDATE__?.open === 'function') { await globalThis.__SP_UPDATE__.open(url); return true; }
+      return !!globalThis.open(url, '_blank', 'noopener');
+    } catch {
+      return false;
+    }
+  }
+
+  /** Hand the download to the phone's own downloader + system installer (the only path that keeps the save). */
+  async function installOnAndroid(feed, asset) {
+    const plugin = globalThis.Capacitor?.Plugins?.AppUpdate;
+    if (typeof plugin?.download !== 'function' || typeof plugin?.install !== 'function') {
+      const opened = await openUrl(asset.url);
+      setHint(opened ? '已在浏览器打开下载页。' : `请手动下载：${asset.url}`);
+      return;
+    }
+    setHint('正在下载更新…');
+    const handle = typeof plugin.addListener === 'function'
+      ? plugin.addListener('progress', ({ received, total }) => {
+        const pct = total > 0 ? ` ${Math.floor((received / total) * 100)}%` : '';
+        setHint(`正在下载更新…${pct}（${(received / 1048576).toFixed(0)}/${(total / 1048576).toFixed(0)} MB）`);
+      })
+      : null;
+    try {
+      const got = await plugin.download({ url: asset.url, sha256: asset.sha256, name: asset.name });
+      if (got?.error) { setHint(`更新失败：${got.error}`); return; }
+      if (!got?.path) { setHint('更新失败：下载没有完成。'); return; }
+      const installed = await plugin.install({ path: got.path });
+      if (installed?.needPermission) {
+        setHint('需要先在系统设置里允许本应用「安装未知应用」，再点一次更新。');
+        await plugin.openInstallSettings?.();
+        return;
+      }
+      if (installed?.error) { setHint(`安装失败：${installed.error}`); return; }
+      setHint('已交给系统安装器：确认即可完成更新，存档不会丢。');
+    } catch (e) {
+      setHint(`更新失败：${e?.message || e}`);
+    } finally {
+      handle?.remove?.();
+    }
+  }
+
+  /** Start the update for this shell (the phone installs it in place; the desktop hands over the download page). */
+  async function startUpdate() {
+    const feed = updateOffer?.feed;
+    const asset = updateAsset(feed, updateOffer?.platform);
+    if (!asset) {
+      setHint('这个版本没有为这台设备准备安装包，请到发布页手动下载。');
+      return;
+    }
+    if (updateOffer.platform === 'android') {
+      await installOnAndroid(feed, asset);
+      return;
+    }
+    // Desktop: a running payload cannot replace its own files, and the distributed form is a zip of a folder, so
+    // the download page is where this ends (docs/PACKAGING.md §10 has the installer-based path for later).
+    const opened = await openUrl(asset.url);
+    setHint(opened ? '已在浏览器打开下载页。' : `请手动下载：${asset.url}`);
+  }
+
+  /** Repaint the update row — the home screen is the only place it exists. */
+  async function renderUpdate() {
+    const el = root.querySelector('#sp-upd');
+    if (!el) return;
+    if (updateOffer === undefined) updateOffer = await lookupUpdate();
+    const feed = updateOffer?.feed;
+    // A version the player already ignored stays quiet until a *newer* build shows up.
+    if (!feed || readItem(K_SKIP_UPDATE, 'localStorage') === String(feed.build)) {
+      el.innerHTML = '';
+      el.hidden = true;
+      return;
+    }
+    const asset = updateAsset(feed, updateOffer.platform);
+    el.hidden = false;
+    el.innerHTML = `
+      <div class="sp-pick__updhead">有新版本 · <b>${esc(updateLabel(feed, updateOffer.platform))}</b></div>
+      ${feed.notes ? `<div class="sp-pick__note">${esc(feed.notes)}</div>` : ''}
+      ${asset ? '' : '<div class="sp-pick__note">这个版本没有为这台设备准备安装包。</div>'}
+      <div class="sp-pick__lanbtns">
+        <button class="sp-pick__btn is-go" id="sp-upd-go">${updateOffer.platform === 'android' ? '下载并安装' : '打开下载页'}</button>
+        <button class="sp-pick__btn" id="sp-upd-skip">忽略此版本</button>
+      </div>`;
+    el.querySelector('#sp-upd-go')?.addEventListener('click', startUpdate);
+    el.querySelector('#sp-upd-skip').addEventListener('click', () => {
+      writeItem(K_SKIP_UPDATE, String(feed.build), 'localStorage');
+      updateOffer = null; // this screen, this session — and the stored build keeps it quiet next launch too
+      renderUpdate();
+      setHint('已忽略这个版本，下次有新版本再提醒。');
+    });
+  }
 
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch { /* insecure context: fall back */ }
@@ -467,6 +646,7 @@ function mount() {
           <span class="sp-pick__mode-note">连接到服务器 · 添加服务器 / 直接连接</span>
         </button>
       </div>
+      <div class="sp-pick__upd" id="sp-upd" hidden></div>
       <div class="sp-pick__hint" id="sp-hint"></div>
     </div>`;
 
@@ -706,6 +886,7 @@ function mount() {
       // The host entry exists only when the shell exposes the bridge (desktop).
       root.querySelector('#sp-host')?.addEventListener('click', () => { screen = 'host'; form = null; setHint(''); layout(); });
       root.querySelector('#sp-join').addEventListener('click', () => { screen = 'multi'; form = null; setHint(''); layout(); loadList(); });
+      renderUpdate();
     } else if (screen === 'host') {
       root.querySelector('#sp-back').addEventListener('click', () => { screen = 'home'; setHint(''); layout(); });
       renderLan();

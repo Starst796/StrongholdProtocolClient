@@ -9,6 +9,7 @@ export const K_LIST = 'sp.shell.list';           // user-added servers: JSON [{ 
 export const K_CHOSEN = 'sp.shell.chosen';       // sessionStorage: already entered once in this session
 export const K_MODE = 'sp.shell.mode';           // 'solo' = in-page single-player server, 'multi' = a real server
 export const K_HOST_PORT = 'sp.shell.hostPort';  // port 创建服务器 listens on ('' / absent = let the OS pick)
+export const K_SKIP_UPDATE = 'sp.shell.skipUpdate'; // build number the player chose to ignore ('' / absent = ask again)
 
 /** Longest stored server name (the picker's "add server" field is capped to this). */
 export const NAME_MAX = 32;
@@ -197,4 +198,153 @@ export function versionLabel(clientProtocol, serverProtocol) {
  */
 export function versionMismatchHint(clientProtocol, serverProtocol) {
   return `服务器协议 v${serverProtocol}，本机客户端 v${clientProtocol} —— 无法联机。请让服务器升级到兼容版本，或换一台服务器。`;
+}
+
+// ---- update check ----------------------------------------------------------------------------------------------
+
+/**
+ * The shape of the published feed (build/dist/latest.json, written by tools/package-release.mjs and uploaded to
+ * GitHub Releases by tools/publish-release.mjs — docs/PACKAGING.md §10). A client refuses anything else.
+ */
+export const FEED_SCHEMA = 1;
+
+/** Longest strings taken from the feed: it is somebody else's JSON, so nothing unbounded reaches the UI. */
+const FEED_TEXT_MAX = 64;
+const FEED_NOTES_MAX = 240;
+/** A feed is a few hundred bytes; anything larger is a redirect to an HTML page or a hostile server. */
+export const FEED_MAX_BYTES = 64 * 1024;
+/** Feed requests get their own timeout: an update check must never be the reason a screen feels stuck. */
+export const FEED_TIMEOUT_MS = 6000;
+/** sha256 of an artifact: 64 lowercase hex characters. */
+const SHA256_RE = /^[0-9a-f]{64}$/;
+
+/** Trimmed string from untrusted JSON, capped, or null when there is nothing usable. */
+function feedText(value, max = FEED_TEXT_MAX) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const s = String(value).trim();
+  return s ? s.slice(0, max) : null;
+}
+
+/**
+ * Is this URL one the client may fetch or hand to the system downloader? https anywhere; http only on this machine,
+ * so a locally served test feed works while a tampered feed cannot point the client at a plaintext download.
+ * @param {unknown} url
+ * @returns {boolean}
+ */
+export function updateUrlOk(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === 'https:') return true;
+  if (parsed.protocol !== 'http:') return false;
+  return parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
+}
+
+/** One artifact of the feed: `{ name, url, sha256, size }`, or null when it is missing or not verifiable. */
+function feedAsset(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const url = feedText(raw.url, 512);
+  const sha256 = feedText(raw.sha256, 64)?.toLowerCase() ?? '';
+  const size = Number(raw.size);
+  // Without a url there is nothing to fetch; without a sha256 there is nothing to verify what was fetched.
+  if (!url || !updateUrlOk(url) || !SHA256_RE.test(sha256) || !Number.isFinite(size) || size <= 0) return null;
+  const name = feedText(raw.name, 128) ?? decodeURIComponent(url.split('/').pop() || '') ?? '';
+  return { name, url, sha256, size: Math.round(size) };
+}
+
+/**
+ * Read the published feed. Anything unexpected — a captive-portal HTML page, a truncated download, a schema from the
+ * future, a feed with no usable artifacts — reads as null: "no update information", never a crash and never a bogus
+ * "new version" prompt.
+ * @param {unknown} raw parsed JSON (or the response text)
+ * @returns {{version: string, build: number, versionCode: number|null, commit: string, notes: string,
+ *            publishedAt: string, win: object|null, android: object|null}|null}
+ */
+export function parseLatestFeed(raw) {
+  let data = raw;
+  if (typeof raw === 'string') {
+    if (raw.length > FEED_MAX_BYTES) return null;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  if (Number(data.schema) !== FEED_SCHEMA) return null;
+  const build = Number(data.build);
+  if (!Number.isInteger(build) || build < 1) return null;
+  const versionCode = Number(data.versionCode);
+  const feed = {
+    version: feedText(data.version) ?? '',
+    build,
+    versionCode: Number.isInteger(versionCode) && versionCode > 0 ? versionCode : null,
+    commit: feedText(data.gameCommit) ?? '',
+    notes: feedText(data.notes, FEED_NOTES_MAX) ?? '',
+    publishedAt: feedText(data.publishedAt) ?? '',
+    win: feedAsset(data.win),
+    android: feedAsset(data.android),
+  };
+  return feed.win || feed.android ? feed : null;
+}
+
+/**
+ * Does the feed offer something newer than what this client already is?
+ *
+ * `build` is this repo's own counter (release.json, rising by one per release — tools/release-meta.mjs), which is
+ * the only thing that can distinguish two builds of the same game version; `versionCode` is the same number packed
+ * for Android and only breaks a tie (a feed published before the counter existed).
+ *
+ * `local` is what /build.json says this client is: null when it could not be read at all (then this stays quiet —
+ * offering a download that might be *older* than what the player runs is worse than offering none), and
+ * `{ build: 0 }` for a payload built before the counter existed (or in a fork), which anything published beats.
+ * @param {{build?: number, versionCode?: number}|null} local
+ * @param {{build?: number, versionCode?: number}|null} remote the published feed
+ * @returns {'newer'|'same'|'older'|'unknown'}
+ */
+export function updateVerdict(local, remote) {
+  const rb = Number(remote?.build);
+  if (!Number.isInteger(rb) || rb < 1) return 'unknown';
+  if (local == null) return 'unknown';
+  const lb = Number(local.build);
+  if (!Number.isInteger(lb) || lb < 0) return 'unknown';
+  if (lb === 0) return 'newer';
+  if (rb !== lb) return rb > lb ? 'newer' : 'older';
+  const lv = Number(local.versionCode);
+  const rv = Number(remote?.versionCode);
+  if (Number.isInteger(lv) && Number.isInteger(rv) && lv !== rv) return rv > lv ? 'newer' : 'older';
+  return 'same';
+}
+
+/** Which artifact this shell installs: the phone takes the APK, everything else the desktop build. */
+export function updatePlatform(ua) {
+  return isAndroidUA(ua) ? 'android' : 'win';
+}
+
+/**
+ * The artifact of the feed this shell would install, or null when the feed has none for it.
+ * @param {object|null} feed @param {'android'|'win'} platform
+ */
+export function updateAsset(feed, platform) {
+  const asset = platform === 'android' ? feed?.android : feed?.win;
+  return asset ?? null;
+}
+
+/**
+ * One line describing what is offered ("0.1.3 · build 12 · 6471511 · 下载 217.2 MB") — enough to decide without
+ * opening anything.
+ * @param {object|null} feed @param {'android'|'win'} platform
+ */
+export function updateLabel(feed, platform) {
+  if (!feed) return '';
+  const bits = [];
+  if (feed.version) bits.push(feed.version);
+  if (Number.isInteger(feed.build)) bits.push(`build ${feed.build}`);
+  if (feed.commit) bits.push(feed.commit.slice(0, 8));
+  const asset = updateAsset(feed, platform);
+  if (asset) bits.push(`下载 ${(asset.size / 1048576).toFixed(1)} MB`);
+  return bits.join(' · ');
 }

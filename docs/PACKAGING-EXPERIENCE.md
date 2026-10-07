@@ -10,13 +10,13 @@
 
 | 命令 | 产物 | 体积 | 备注 |
 |---|---|---|---|
-| `npm run client:build` | `build/client/www` | 265.7 MB / 4157 文件 | 只是摊平的 payload，用来自托管/调试 |
-| `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | 585.5 MB，exe 本身 234.3 MB | **默认形态**，双击到首屏 ~0.3 s |
+| `npm run client:build` | `build/client/www` | 498.1 MB / 8816 文件（0.2.0） | 只是摊平的 payload，用来自托管/调试 |
+| `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | ~818 MB，exe 本身 234.3 MB | **默认形态**，双击到首屏 ~0.3 s |
 | `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | ~253 MB | 单文件，首屏 **~24 s**（每次启动都把整个应用解到 `%TEMP%`） |
-| `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | 192.4 MB | debug 包；`--release` 出未签名的 release |
-| `npm test` | —— | 36 用例 | `packaging/picker/status`；没有游戏 checkout 时自动 skip |
+| `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | ~228 MB | debug 包；`--release` 出未签名的 release |
+| `npm test` | —— | 129 用例 | `packaging/picker/update/status/host`；没有游戏 checkout 时自动 skip |
 
-默认连 `game.starst.site`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
+默认连 `localhost:3000`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
 **本打包仓库**（`Stronghold-Protocol-Client`）／**服务器启动器**（`Stronghold-Protocol-Server-Launcher`，另一件事）。
 
 前置：Node 22+；一个已经 `npm install` + `npm run assets` 的**游戏仓库 checkout**（素材约 265 MB，不在 GitHub 里）；
@@ -25,14 +25,19 @@
 游戏仓库自带 Node 在 `d:\gits\Stronghold-Protocol\.tools\node\node.exe`，
 无头浏览器用 Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`。
 
+想在**不动用户工作区**的前提下验证（比如本机 checkout 已经领先到打包器还不支持的上游版本），用
+`git worktree add d:\gits\sp-<sha> <sha>` 拿一份旧提交，再把 `public/assets`、`public/fonts` 从主 checkout
+**robocopy 过去**（junction 不会被 `readdirSync` 跟随，会静默少素材），最后 `--game d:\gits\sp-<sha>` 打包。
+
 ---
 
 ## 1. 第一条铁律：payload 是"快照"，改游戏端就必须重打
 
 `tools/package-client.mjs` 把游戏仓库的挂载点**摊平**成 `build/client/www`（`/`→`public/`，`/data/`→`data/`，
-`/shared/`→`shared/`，`/sim/`→`server/sim/*.js` 去掉 Node 专用 loader），并生成 `data.js`（浏览器版
-`server/data.js` 替身）、`js/runtime-config.js`（连哪个服务器）、`js/shell/*`、`css/shell-display.css`、`build.json`。
-exe 把它塞进 `resources/www`，apk 把它塞进 `assets/public/`。
+`/shared/`→`shared/`，`/sim/`→`server/sim/*.js` 去掉 Node 专用 loader，`/packs/`→`packs/`），并生成 `data.js`（浏览器版
+`server/data.js` 替身）、`server/**`（页内服务器用的引擎，见 §5）、`packs/index.json`（0.2.0 内容包索引，
+用游戏自己的 `tools/packs.mjs index` 生成）、`js/runtime-config.js`（连哪个服务器 + 更新 feed）、`js/shell/*`、
+`css/shell-display.css`、`build.json`。exe 把它塞进 `resources/www`，apk 把它塞进 `assets/public/`。
 
 **后果**：游戏端只要动了 `public/**`（新 UI、新功能，比如"服务器公告"的横幅），**已经装出去的 exe/apk 都不会有**——
 网页端刷新就有，端侧必须重打。给玩家的说明和你的发布节奏都要考虑这一点。
@@ -55,8 +60,12 @@ cd d:/gits/Stronghold-Protocol && git diff --stat upstream/master..master
 # 期望：只剩你自己的、准备开 PR 的功能；出现打包/部署脚本就是放错地方了
 ```
 
-`test/packaging.test.js` 通过 `tools/game-contract.mjs` 锁定 `DATA_SHIM_JS` / `SIM_PRIVATE` 必须与游戏仓库
-`server/index.js` 一致——**游戏端改了挂载点或 sim 的私有文件，这里会红**，这是设计好的报警，不要改断言绕过。
+`test/packaging.test.js` 通过 `tools/game-contract.mjs` 锁定 `DATA_SHIM_JS` / `SIM_PRIVATE` 必须与游戏仓库的
+**契约文件**（0.2.0 起是 `server/http/static.js`，常量 `CONTRACT_FILE`）一致——**游戏端改了挂载点或 sim 的私有文件，
+这里会红**，这是设计好的报警，不要改断言绕过。
+
+**上游修好了就删 hook**：`js/screens/lobby.js` 那个"补上 ERR import"的 hook 在 0.2.0 已经删掉（上游自己导入了）。
+留着它只会让 `regen-patch` 抛 `anchor not found`——hook 是"上游还没做、我们等不及"的临时措施，不是资产。
 
 ## 3. 桌面端（exe）：几个必须记住的判断
 
@@ -165,6 +174,14 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | Android 端 SSL 钩子改不动？ | `SslError.getCertificate()` 返回的是 `android.net.http.SslCertificate`（**不是** `X509Certificate`）：API 29+ 用 `getX509Certificate()`，24–28 用 `SslCertificate.saveState(cert).getByteArray("x509-certificate")` 再 `CertificateFactory`。Capacitor 的 `BridgeWebViewClient` 是 public、`Bridge.setWebViewClient()` 也是 public，所以能"子类只覆盖 `onReceivedSslError`"而不破坏本地 payload |
 | 域名带路径（`host/play/`）连不上 | 选择页把路径原样接到 `/ws` 前（`host/play/` → `wss://host/play/ws`），路径不存在就是 404。注意游戏服务端的 `/ws` **只应答带 `Upgrade` 的请求**：普通 GET 返回 404 是正常的，用 `curl -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="` 才能看到 101 |
 | `Number(null) === 0` | 可选数字别随手 `Number()`：`null` 必须保持"没有"，否则"未设置"会被当成 0（公告的 `until` 就栽过） |
+| 上游 0.2.0 后打包全红：`DATA_SHIM_JS not found` | `server/index.js` 被拆成 `server/http/*`，契约声明搬到了 **`server/http/static.js`**（`CONTRACT_FILE`），MIME 表搬到 `server/http/files.js`（`MIME_FILE`）。改这两个常量即可，别再回去读 `index.js` |
+| 下游能跑但文件多出一堆、守卫报 `node:http` | 0.2.0 的 `server/http/**` 是纯 HTTP 层（`node:http`/`node:zlib`/`node:fs`），payload 不该带：`SERVER_PRIVATE_DIRS = ['http']` + `SERVER_PRIVATE` 里加 `packs.js`（那层由各自的壳替代：Electron `serve.mjs` / Android `MiniHostServer` / Capacitor WebView） |
+| 语言切换菜单空 / `/packs/index.json` 404 | 0.2.0 的内容包（`docs/PACKS.md`）：真实服务器用 `server/packs.js` 现算索引，静态托管跑不了。打包时用**游戏自己的工具**生成 `packs/index.json`（`writePackIndex()` 调 `node tools/packs.mjs index --out …`，和上游发布 zip 同一套），并把 `packs/` 挂载一起镜像 |
+| 控制台一串 `/media/bgm/xxx` 404 | **不是 bug**：0.2.0 为了躲下载管理器（IDM/迅雷）把音频地址改成无扩展名的 `/media/…`，那是服务器路由。`public/js/audio.js` 的 `isAudioResponse` 会在 404 / 非 audio 响应时**回退到 `/assets/audio/…` 直链**，所以打包客户端照样有声音。要证明就 fetch 两条：`/media/…`=404、`/assets/audio/…mp3`=200 `audio/mpeg` |
+| 同一版本号打两次，Android 说"未安装/无法更新" | `versionCode` 只从 `APP_VERSION` 推的话永远不变（0.1.3 → 103）。现在带**构建号**：`版本码 ×10000 + build`（`tools/release-meta.mjs`），`release.json` 只增不减 |
+| 覆盖安装后存档（干员调配/设置/续连）没了 | 那是**卸载**造成的，不是覆盖：Android 只要求签名一致 + versionCode 不降。历史上"必须删了重下"多半是安装器点错或空间不足；真换签名（debug → release）的那一次才必须卸载，所以**尽早定下正式签名** |
+| 更新提示不出现 | 先看 feed 是否真的可达（`curl -sSL …/releases/latest/download/latest.json`）：Docker 别名只认**正式发布**，draft/prerelease 不生效；再看 `build.json` 的 `client.build` 是否 ≥ feed 的 `build`；被"忽略此版本"记过就等更新的 build（`localStorage.sp.shell.skipUpdate`） |
+| 想测更新但不想真发布 | 起假 feed（`feed-server.mjs --port 8199`）→ `node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json` → CDP 查 `#sp-upd`。`--build 0` 必须被拒绝、`--empty` 必须静默 |
 
 ## 7. 交付
 
@@ -175,7 +192,7 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 
 ## 8. 交给后续 agent 的三步验收
 
-1. `npm test`（36 用例，含 payload 补丁格式与游戏契约）——红了的断言先读懂，别改断言；
+1. `npm test`（用例含 payload 补丁格式、游戏契约、更新规则）——红了的断言先读懂，别改断言；
 2. 重新 `npm run client:desktop` + `npm run client:android`，按 §5 的 1)~5) **验产物**（哈希、启动冒烟、apk 拆包、aapt2）；
 3. `git diff --stat upstream/master..master` 确认游戏仓库没有混进客户端专用代码。
 

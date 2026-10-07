@@ -18,13 +18,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
-import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
+import { DATA_SHIM_JS, SIM_PRIVATE, CONTRACT_FILE, MIME_FILE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { buildPatch, applyHooks } from '../tools/regen-patch.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, OFFLINE_FILES, assertServerNeedsOnlyShims, parseCommonArgs } from '../tools/package-client.mjs';
+import { androidVersionCode, readRelease } from '../tools/release-meta.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** The update feed the shells bake in (client.config.json), or '' when a fork publishes nowhere. */
+const CONFIG_FEED = (() => {
+  try {
+    return String(JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'client.config.json'), 'utf8')).update?.feed ?? '');
+  } catch {
+    return '';
+  }
+})();
 
 /** The game checkout, or null (then the contract tests skip themselves). */
 const GAME_ROOT = (() => {
@@ -64,8 +73,17 @@ function makeGameFixture() {
   write(root, 'server/lobby.js', "import { randomInt } from 'node:crypto';\nexport const L = 1;\n");
   write(root, 'server/match/Match.js', 'export const M = 1;\n');
   write(root, 'server/match/StubMatch.js', 'stub\n');
+  write(root, 'server/packs.js', 'export const LANG_DIR = "i18n";\n');
+  // 0.2.0 split the server into server/http/*; the payload must not carry it (it imports node:http / node:zlib, and
+  // a packaged client serves files itself), so the fixture proves the exclusion.
+  write(root, 'server/http/routes.js', "import http from 'node:http';\nimport zlib from 'node:zlib';\nexport const R = 1;\n");
+  write(root, 'server/http/files.js', 'export const MIME = 1;\n');
   // the two declarations tools/game-contract.mjs mirrors (kept byte-identical to the real values)
-  write(root, 'server/index.js', `export const DATA_SHIM_JS = \`${DATA_SHIM_JS}\`;\nconst SIM_PRIVATE = new Set(['nodedata.js']);\n`);
+  write(root, 'server/http/static.js', `export const DATA_SHIM_JS = \`${DATA_SHIM_JS}\`;\nconst SIM_PRIVATE = new Set(['nodedata.js']);\n`);
+  // content packs (0.2.0): the folder packs mount, plus the game's own indexer the assembler runs
+  write(root, 'packs/README.md', 'packs\n');
+  write(root, 'public/i18n/en.json', '{"_meta":{"id":"en"}}\n');
+  write(root, 'tools/packs.mjs', "import fs from 'node:fs';\nconst out = process.argv[process.argv.indexOf('--out') + 1];\nfs.writeFileSync(out, JSON.stringify({ version: 1, app: '0.1.0', packs: [{ id: 'en', type: 'lang', lang: 'en' }] }, null, 2) + '\\n');\n");
   // a stand-in for patches/game-client.patch, against the three files above
   const patchFile = path.join(patch, 'game-client.patch');
   writeFileSync(patchFile, [
@@ -95,14 +113,6 @@ function makeGameFixture() {
     '+// patched: invite links use toHttpUrl()',
     ' /** Invite link. */',
     ' export function inviteLink(code) { return `?room=${code}`; }',
-    'diff --git a/public/js/screens/lobby.js b/public/js/screens/lobby.js',
-    '--- a/public/js/screens/lobby.js',
-    '+++ b/public/js/screens/lobby.js',
-    '@@ -1,3 +1,3 @@',
-    ' // lobby',
-    '-import { A } from "../../../shared/constants.js";',
-    '+import { ERR, A } from "../../../shared/constants.js";',
-    ' export const L = 1;',
     '',
   ].join('\n'));
   return { root, patchFile };
@@ -113,8 +123,8 @@ describe('unified diff applier', () => {
     const files = parsePatch(readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8'));
     assert.equal(files.length, PATCHED_FILES.length);
     assert.deepEqual(files.map((f) => stripPath(f.newPath, 2)).sort(), [...PATCHED_FILES].sort());
-    // index.html 2 + net.js 2 + room.js 2 + lobby.js 1
-    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 7);
+    // index.html 2 + net.js 2 + room.js 2 (the lobby.js ERR hook went away in 0.2.0: upstream imports ERR itself)
+    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 6);
   });
 
   test('applies a patch, and refuses to apply it where the context no longer matches', () => {
@@ -163,20 +173,25 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
     assert.ok(!text.includes('\uFEFF'), 'no BOM');
   });
 
-  test('DATA_SHIM_JS / SIM_PRIVATE match server/index.js', () => {
+  test('DATA_SHIM_JS / SIM_PRIVATE match the server contract file', () => {
     assert.doesNotThrow(() => verifyGameContract(GAME_ROOT));
-    const { shim, simPrivate } = readGameContract(readFileSync(path.join(GAME_ROOT, 'server', 'index.js'), 'utf8'));
+    const { shim, simPrivate } = readGameContract(readFileSync(path.join(GAME_ROOT, ...CONTRACT_FILE.split('/')), 'utf8'));
     assert.equal(shim, DATA_SHIM_JS);
     assert.deepEqual(simPrivate, [...SIM_PRIVATE]);
     assert.equal(typeof readProtocolVersion(GAME_ROOT), 'number');
     assert.ok(isGameRoot(GAME_ROOT));
+    // The one upstream fix this repo used to patch (the spectator path used ERR without importing it) is upstream's
+    // own now — if it ever regresses, the 观战 flow breaks again and this says so before a release.
+    const lobby = readFileSync(path.join(GAME_ROOT, 'public', 'js', 'screens', 'lobby.js'), 'utf8');
+    assert.match(lobby, /from '\.\.\/\.\.\/\.\.\/shared\/constants\.js'/);
+    assert.match(lobby, /\bERR\b/, 'lobby.js must import the ERR codes it uses');
   });
 
   test('the shell serves the payload with the game server"s MIME table', async () => {
     const { MIME } = await import('../desktop/serve.mjs');
-    const src = readFileSync(path.join(GAME_ROOT, 'server', 'index.js'), 'utf8');
+    const src = readFileSync(path.join(GAME_ROOT, ...MIME_FILE.split('/')), 'utf8');
     const block = /export const MIME = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(src);
-    assert.ok(block, 'MIME 表解析失败：游戏仓库 server/index.js 的 MIME 写法变了');
+    assert.ok(block, `MIME 表解析失败：游戏仓库 ${MIME_FILE} 的 MIME 写法变了`);
     const pairs = [...block[1].matchAll(/'([^']+)':\s*'([^']+)'/g)].map((m) => [m[1], m[2]]);
     assert.ok(pairs.length > 20, `MIME 表只解析出 ${pairs.length} 条，解析可能失效`);
     assert.deepEqual({ ...MIME }, Object.fromEntries(pairs));
@@ -283,11 +298,12 @@ describe('open to LAN wiring (desktop shell ↔ picker)', () => {
     assert.ok(!/root\.addEventListener\('keydown'/.test(picker), 'a root-level listener would never fire');
   });
 
-  test('the payload patch fixes upstream lobby.js (spectator ERR import)', () => {
+  test('the payload patch no longer carries the lobby.js ERR workaround', () => {
+    // 0.2.0 imports ERR itself, so the hook is deleted: a patch that still edited lobby.js would stop applying, and
+    // this assertion is cheaper to read than the applier's "hunk does not match" error at packaging time.
     const patch = read('patches/game-client.patch');
-    assert.match(patch, /diff --git a\/public\/js\/screens\/lobby\.js/);
-    assert.match(patch, /^\+import \{ ERR,/m, 'the ERR import is added');
-    assert.ok(PATCHED_FILES.includes('js/screens/lobby.js'));
+    assert.ok(!patch.includes('js/screens/lobby.js'), 'upstream fixed the missing ERR import — the hook must be gone');
+    assert.ok(!PATCHED_FILES.includes('js/screens/lobby.js'));
   });
 
   test('a LAN guest skips the picker and stays on its own origin', () => {
@@ -356,9 +372,19 @@ describe('client payload assembly', () => {
     assert.equal(r.server, DEFAULT_SERVER);
     assert.equal(r.missingAssets, false);
     assert.equal(r.patched.length, PATCHED_FILES.length);
-    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json', 'offline/node-crypto.js', 'offline/node-net.js', 'offline/data-provider.js', 'offline/loopback.js', 'offline/game-server.js', 'offline/bootstrap.js', 'offline/host-mobile.js', 'server/data.js', 'server/net.js', 'server/lobby.js', 'server/match/Match.js', 'server/sim/units.js']) {
+    for (const rel of ['index.html', 'js/main.js', 'assets/char/x.png', 'data/chess.json', 'shared/constants.js', 'sim/units.js', 'sim/content/support/index.js', 'data.js', 'build.json', 'js/runtime-config.js', 'js/shell/picker.js', 'js/shell/picker-core.js', 'data/local-assets.json', 'offline/node-crypto.js', 'offline/node-net.js', 'offline/data-provider.js', 'offline/loopback.js', 'offline/game-server.js', 'offline/bootstrap.js', 'offline/host-mobile.js', 'server/data.js', 'server/net.js', 'server/lobby.js', 'server/match/Match.js', 'server/sim/units.js', 'packs/README.md', 'packs/index.json']) {
       assert.ok(existsSync(path.join(out, rel)), `${rel} must be in the payload`);
     }
+    // the node:http layer and the pack registry never ship: the shell serves the files, and the payload carries the
+    // generated /packs/index.json instead (a static host cannot run the game's live registry)
+    for (const rel of ['server/http', 'server/index.js', 'server/packs.js', 'server/sim/nodeData.js']) {
+      assert.ok(!existsSync(path.join(out, ...rel.split('/'))), `${rel} must not be in the payload`);
+    }
+    assertServerNeedsOnlyShims(out);
+    // ...and the pack index is the game's own indexer output, not a hand-written stub
+    const packIndex = JSON.parse(readFileSync(path.join(out, 'packs', 'index.json'), 'utf8'));
+    assert.equal(packIndex.version, 1);
+    assert.equal(packIndex.packs[0].id, 'en');
     // the offline layer is copied verbatim (its /offline/* imports must resolve)
     for (const [name, rel] of OFFLINE_FILES) {
       assert.equal(readFileSync(path.join(out, rel), 'utf8'), readFileSync(path.join(ROOT, 'offline', name), 'utf8'));
@@ -382,11 +408,17 @@ describe('client payload assembly', () => {
     // the empty local-art manifest stands in for the server's synthesised response
     assert.deepEqual(JSON.parse(readFileSync(path.join(out, 'data', 'local-assets.json'), 'utf8')).groups, {});
     // the packaged client's server address + build provenance
-    assert.equal(readFileSync(path.join(out, 'js', 'runtime-config.js'), 'utf8'), runtimeConfigSource(DEFAULT_SERVER));
+    assert.equal(readFileSync(path.join(out, 'js', 'runtime-config.js'), 'utf8'), runtimeConfigSource(DEFAULT_SERVER, false, CONFIG_FEED));
     const build = JSON.parse(readFileSync(path.join(out, 'build.json'), 'utf8'));
     assert.equal(build.server, DEFAULT_SERVER);
     assert.equal(build.game.app, '0.1.0');
     assert.equal(build.game.protocol, 1);
+    assert.equal(build.feed, CONFIG_FEED, 'the payload tells the picker which feed to poll');
+    // ...and this repo's own build identity is what an update check compares against the published feed
+    const clientVersion = JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'package.json'), 'utf8')).version;
+    assert.equal(build.client.version, clientVersion);
+    assert.equal(build.client.build, readRelease().build);
+    assert.equal(build.client.versionCode, androidVersionCode(clientVersion, build.client.build));
     // the patch landed on the payload copy, not on the checkout
     assert.doesNotThrow(() => assertPatched(out));
     assert.match(readFileSync(path.join(out, 'js', 'net.js'), 'utf8'), /__SP_SERVER__/);
@@ -423,6 +455,9 @@ test('the packaged clients default to a server the player runs locally', () => {
   const config = JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'client.config.json'), 'utf8'));
   assert.equal(config.gameRoot, '../Stronghold-Protocol');
   assert.equal(config.defaultServer, DEFAULT_SERVER);
+  // ...and names where releases are published (the update feed + the repo publish-release.mjs uploads to)
+  assert.match(config.update.repo, /^[\w.-]+\/[\w.-]+$/);
+  assert.equal(config.update.feed, `https://github.com/${config.update.repo}/releases/latest/download/latest.json`);
   // ...and the shells ship the same defaults
   assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'mobile', 'capacitor.config.json'), 'utf8')).appId, 'site.starst.stronghold');
   assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build.appId, 'site.starst.stronghold');

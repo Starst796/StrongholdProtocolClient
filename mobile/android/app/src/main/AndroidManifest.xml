@@ -40,4 +40,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- In-app updates (AppUpdatePlugin): the player still confirms in the system installer, but Android 8+ wants
+         the app to declare that it may hand over an APK at all. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>

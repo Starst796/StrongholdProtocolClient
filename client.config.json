@@ -1,4 +1,8 @@
 {
   "gameRoot": "../Stronghold-Protocol",
-  "defaultServer": "localhost:3000"
+  "defaultServer": "localhost:3000",
+  "update": {
+    "repo": "Starst796/StrongholdProtocolClient",
+    "feed": "https://github.com/Starst796/StrongholdProtocolClient/releases/latest/download/latest.json"
+  }
 }

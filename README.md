@@ -143,7 +143,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 
 ## 对局域网开放（客户端即服务器：桌面版 / Android）
 
-两端都能**自己当服务器**（Minecraft「集成服务器」/「对局域网开放」的思路）：主页选「创建服务器」再点「对局域网开放」，起一个**真实的 WebSocket 服务器**，直接复用 payload 里的 `server/net.js` + `lobby.js` + `match/`（和页内单人模式同一套引擎），监听 `<端口>`（默认 `47822`，被占则顺延到 `+15`，再不行由系统分配）。**引擎一样，跑的地方不同**：
+两端都能**自己当服务器**（Minecraft「集成服务器」/「对局域网开放」的思路）：主页选「创建服务器」再点「对局域网开放」，起一个**真实的 WebSocket 服务器**，直接复用 payload 里的 `server/net.js` + `lobby.js` + `match/`（和页内单人模式同一套引擎），监听你填的端口（**留空 = 由系统分配**）。**引擎一样，跑的地方不同**：
 
 | | 端口与 WebSocket | 游戏引擎（大厅 / 对局） | 桥 |
 |---|---|---|---|
@@ -156,6 +156,17 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 - 数据：桌面版由主进程从 `resources/www/data/*.json` 读盘注入；Android 由 WebView 自己 `fetch('/data/*.json')`（Capacitor 的本地资源服务）。`offline/data-provider.js` 两种都支持；全靠相对路径导入，不需要改游戏仓库。
 - 只是 `ws://` 明文 + 局域网，桌面端**首次启动 Windows 会弹防火墙入站允许**（和 Minecraft 一样）；Android 的 `ws://` 需要 APK 打开 `allowMixedContent` 与 `usesCleartextTraffic`（本仓库默认打开，见 [docs/PACKAGING.md](docs/PACKAGING.md) §5）。
 - 安全/限制沿用游戏服务器：本地/局域网地址不受每网络限流（`server/net.js` 的 `clientAddress`）。静态托管只认 `GET`/`HEAD`，拒绝路径穿越与点文件；会话的存活由游戏自己的心跳（`Network` 的 `ping` → 原生 `pong`）判断。
+
+## 客户端内更新提示（exe / apk）
+
+客户端**会自己发现上游更新**并在主页（选择模式）底部提示：「有新版本 · 0.2.0 · build 13 · 64715116 · 下载 217.2 MB」。
+
+- **Android**：「下载并安装」在应用内流式下载 APK（边下边校验 sha256），然后交给系统安装器——签名一致 + `versionCode` 递增（本仓库自带构建号，见 [docs/PACKAGING.md](docs/PACKAGING.md) §14），所以是**覆盖安装，存档与设置都保留**。（Android 不允许静默安装，系统会弹一次确认；首次会引导你去允许「安装未知应用」。）
+- **桌面版**：「打开下载页」用系统浏览器打开该版本的下载地址。当前分发形态是"目录版 + zip"，运行中的程序换不掉自己的文件，所以桌面端到此为止（要真自动更新得换 NSIS 安装器，见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.1 / §14.4）。
+- **忽略此版本**：记住 `sp.shell.skipUpdate`，这一版不再提示，直到有更新的 build。
+- 检查是**尽力而为**：离线、feed 不可达、JSON 坏掉、schema 不认识，都只是"没有更新信息"，不会弹错、不会卡启动。`client.config.json` 的 `update.feed` 留空则**完全不发更新请求**。
+
+发布方的步骤（生成 feed → 上传 GitHub Releases）见 [docs/PACKAGING.md](docs/PACKAGING.md) §14。
 
 ## 许可
 
