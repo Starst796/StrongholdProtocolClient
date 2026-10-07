@@ -10,6 +10,12 @@
 //   --attempts <n>    tries per upload (default 3): the packages are hundreds of MB over a home link
 //   --api <url>       API base (default https://api.github.com; for GitHub Enterprise and for tests)
 //   --uploads <url>   upload base (default https://uploads.github.com)
+//   --proxy <url>     proxy for every request, e.g. http://127.0.0.1:7892 (curl -x; overrides the environment)
+//   --check           only probe connectivity and report which route curl took, then exit
+//
+// Proxies: curl already honours https_proxy / HTTPS_PROXY / all_proxy, but a variable only reaches it if it was set
+// in the shell that started node. `--check` and the startup log make that visible instead of a guess. Note that for
+// GitHub (all HTTPS) the variable that matters is HTTPS_PROXY — the uppercase HTTP_PROXY alone never applies.
 //
 // Order matters and is deliberate: the artifacts go up first and latest.json *last*, so clients never see a feed
 // pointing at files that are not there yet.
@@ -34,7 +40,7 @@ const API_DEFAULT = 'https://api.github.com';
 const UPLOADS_DEFAULT = 'https://uploads.github.com';
 
 export function parsePublishArgs(argv) {
-  const o = { tag: undefined, dist: undefined, repo: undefined, token: undefined, dryRun: false, attempts: 3, api: undefined, uploads: undefined, help: false };
+  const o = { tag: undefined, dist: undefined, repo: undefined, token: undefined, dryRun: false, attempts: 3, api: undefined, uploads: undefined, proxy: undefined, check: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -47,6 +53,8 @@ export function parsePublishArgs(argv) {
     else if (key === '--attempts') o.attempts = Math.max(1, Number(val()) || 3);
     else if (key === '--api') o.api = val();
     else if (key === '--uploads') o.uploads = val();
+    else if (key === '--proxy') o.proxy = val();
+    else if (key === '--check') o.check = true;
     else if (key === '--dry-run') o.dryRun = true;
     else if (key === '-h' || key === '--help') o.help = true;
     else throw new Error(`unknown option ${a}`);
@@ -67,8 +75,8 @@ export function parsePublishArgs(argv) {
  *  - `--speed-limit/--speed-time` abort a transfer that has stalled (a dead link would otherwise sit there for the
  *    full --max-time), so the retry loop can start over quickly.
  */
-function curl(url, { token, method = 'GET', json, file, timeoutMs = 60000 } = {}) {
-  const args = curlArgs(url, { token, method, json, file, timeoutMs });
+function curl(url, { token, method = 'GET', json, file, timeoutMs = 60000, proxy } = {}) {
+  const args = curlArgs(url, { token, method, json, file, timeoutMs, proxy });
   const r = spawnSync('curl', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
   if (r.error) throw r.error;
   const out = String(r.stdout ?? '');
@@ -81,13 +89,18 @@ function curl(url, { token, method = 'GET', json, file, timeoutMs = 60000 } = {}
 /**
  * The curl argument vector. Exported (and therefore testable without a network) because two of these arguments are
  * load-bearing for the 500 MB uploads — see the note above curl().
+ *
+ * `proxy` is passed as `-x` when the caller asked for one explicitly. Without it curl still honours the usual
+ * environment (https_proxy / HTTPS_PROXY / all_proxy); `-x` exists because "is my $env:HTTPS_PROXY reaching curl?"
+ * is otherwise invisible — a variable only reaches a process if it was set in that process' shell (see --check).
  */
-export function curlArgs(url, { token, method = 'GET', json, file, timeoutMs = 60000 } = {}) {
+export function curlArgs(url, { token, method = 'GET', json, file, timeoutMs = 60000, proxy } = {}) {
   const args = [
     '-sS', '--http1.1', '--connect-timeout', '30', '--max-time', String(Math.ceil(timeoutMs / 1000)),
     '--speed-limit', '10240', '--speed-time', '120',
     '-X', method, '-w', '\n%{http_code}',
   ];
+  if (proxy) args.push('-x', proxy);
   if (token) args.push('-H', `Authorization: Bearer ${token}`);
   args.push('-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28');
   if (json !== undefined) args.push('-H', 'Content-Type: application/json', '--data-binary', json);
@@ -95,6 +108,36 @@ export function curlArgs(url, { token, method = 'GET', json, file, timeoutMs = 6
   if (file !== undefined) args.push('-H', 'Expect:', '-H', 'Content-Type: application/octet-stream', '-T', file);
   args.push(url);
   return args;
+}
+
+/**
+ * Which route did curl actually take? Read out of `curl -v`'s stderr, because that is the only place it says so —
+ * and "the proxy software shows no traffic" is otherwise indistinguishable from "the upload went direct".
+ *
+ * Real lines this parses (curl 8.13 on Windows, both directions):
+ *   * Uses proxy env variable https_proxy == 'http://127.0.0.1:7892'
+ *   *   Trying 127.0.0.1:7892...
+ *   * Establish HTTP proxy tunnel to api.github.com:443
+ *   * Connected to api.github.com (140.82.121.6) port 443          ← direct
+ */
+export function parseCurlRoute(stderr) {
+  const text = String(stderr ?? '');
+  const env = /Uses proxy env variable ([A-Za-z0-9_]+) == '([^']+)'/.exec(text);
+  const tunnel = /Establish HTTP proxy tunnel to ([^\s]+)/.exec(text);
+  if (env) return { viaProxy: true, proxy: env[2], source: `环境变量 ${env[1]}`, target: tunnel ? tunnel[1] : null };
+  if (tunnel) return { viaProxy: true, proxy: null, source: 'curl -x（命令行）', target: tunnel[1] };
+  const direct = /Connected to ([^\s]+) \(([^)]+)\) port (\d+)/.exec(text);
+  if (direct) return { viaProxy: false, proxy: null, source: '直连', target: `${direct[1]}:${direct[3]}` };
+  return { viaProxy: false, proxy: null, source: '未知', target: null };
+}
+
+/** The proxy the environment would hand to curl, for logging (curl itself reads these; we only report them). */
+export function envProxy(env = process.env) {
+  for (const name of ['https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
+    const value = String(env[name] ?? '').trim();
+    if (value) return { url: value, name };
+  }
+  return null;
 }
 
 /**
@@ -127,11 +170,11 @@ function call(url, options, allowed) {
  * a retry starts from zero — which is exactly why the attempt budget exists instead of one long, doomed request.
  * A 4xx is final (a bad token, a name taken): retrying would only repeat it.
  */
-function uploadAsset(url, file, { token, attempts, retryWaitMs = 15000, log }) {
+function uploadAsset(url, file, { token, attempts, retryWaitMs = 15000, log, proxy }) {
   const mb = (fs.statSync(file).size / 1048576).toFixed(1);
   let last = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const res = curl(url, { token, method: 'POST', file, timeoutMs: 3600000 });
+    const res = curl(url, { token, method: 'POST', file, timeoutMs: 3600000, proxy });
     if (res.status === 201) return expectResponse(res.status, res.body, [201]);
     // 4xx other than the retryable 408/429 is the server saying no: report it now.
     if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
@@ -160,6 +203,9 @@ export function publish(o = {}) {
   const attempts = Math.max(1, Number(o.attempts ?? 3) || 3);
   // Retry pacing: the first wait is this long, the second twice that. Not a CLI flag — tests take it to 0.
   const retryWaitMs = Number.isFinite(Number(o.retryWaitMs)) ? Math.max(0, Number(o.retryWaitMs)) : 15000;
+  // `--proxy` wins over the environment: with `-x` there is no doubt about the route (see --check).
+  const proxy = String(o.proxy ?? '').trim();
+  const env = envProxy();
 
   const feedFile = path.join(dist, 'latest.json');
   if (!fs.existsSync(feedFile)) throw new Error(`没有找到 ${path.relative(CLIENT_ROOT, feedFile)} —— 先跑 node tools/package-release.mjs`);
@@ -189,6 +235,14 @@ export function publish(o = {}) {
 
   log(`publish-release: ${repo} ← tag ${tag}`);
   for (const u of uploads) log(`  ${u.name}  ${(fs.statSync(u.file).size / 1048576).toFixed(1)} MB`);
+  log(proxy
+    ? `publish-release: 代理 = ${proxy}（--proxy，显式交给 curl -x）`
+    : env
+      ? `publish-release: 代理 = ${env.url}（环境变量 ${env.name}）`
+      : 'publish-release: 代理 = 无 —— 直连 GitHub（慢/被掐断时用 --proxy http://127.0.0.1:7892）');
+  if (process.env.NO_PROXY || process.env.no_proxy) {
+    log(`publish-release: 注意 NO_PROXY=${process.env.NO_PROXY || process.env.no_proxy} —— 若它包含 github.com，代理会被绕过`);
+  }
   if (o.dryRun) {
     log('publish-release: --dry-run —— 没有上传任何东西');
     return { repo, tag, uploads: uploads.map((u) => u.name), dryRun: true };
@@ -228,7 +282,7 @@ export function publish(o = {}) {
     const url = `${UPLOADS}/repos/${repo}/releases/${release.id}/assets?name=${encodeURIComponent(u.name)}`;
     const size = fs.statSync(u.file).size;
     log(`publish-release: 正在上传 ${u.name}（${(size / 1048576).toFixed(1)} MB）…`);
-    const asset = uploadAsset(url, u.file, { token, attempts, retryWaitMs, log });
+    const asset = uploadAsset(url, u.file, { token, attempts, retryWaitMs, log, proxy });
     if (Number(asset.size) !== size) {
       throw new Error(`${u.name} 上传后大小不符（${asset.size} ≠ ${size}）—— 重新执行本命令`);
     }
@@ -254,11 +308,52 @@ export function publish(o = {}) {
   return { repo, tag, release: release.html_url, feedUrl, uploads: uploads.map((u) => u.name) };
 }
 
+/**
+ * `--check`: one tiny request through the same curl invocation the uploads use, reporting the route curl took and the
+ * status it got. Exists because "the proxy shows no traffic" is otherwise only discoverable after pushing 483 MB.
+ */
+export function checkConnectivity(o = {}) {
+  const config = loadConfig();
+  const repo = String(o.repo ?? config.update?.repo ?? '').trim() || 'Starst796/StrongholdProtocolClient';
+  const API = String(o.api ?? API_DEFAULT).replace(/\/$/, '');
+  const proxy = String(o.proxy ?? '').trim();
+  const env = envProxy();
+  const url = `${API}/repos/${repo}`;
+
+  console.log(`publish-release: 探测 ${url}`);
+  console.log(proxy
+    ? `  代理 = ${proxy}（--proxy）`
+    : env
+      ? `  代理 = ${env.url}（环境变量 ${env.name}）`
+      : '  代理 = 无 —— curl 将直连（要用代理：--proxy http://127.0.0.1:7892）');
+  if (process.env.NO_PROXY || process.env.no_proxy) console.log(`  NO_PROXY = ${process.env.NO_PROXY || process.env.no_proxy}`);
+
+  // `-v` makes curl name the route it took on stderr; the URL is the last argument curlArgs() builds.
+  const args = [...curlArgs(url, { proxy, timeoutMs: 30000, method: 'GET' }).slice(0, -1), '-v', url];
+  const r = spawnSync('curl', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  if (r.error) throw r.error;
+  const out = String(r.stdout ?? '');
+  const status = Number(out.slice(out.lastIndexOf('\n') + 1));
+  const body = out.slice(0, out.lastIndexOf('\n')).trim();
+  const route = parseCurlRoute(r.stderr);
+
+  console.log(`  curl 实际走的是：${route.source}${route.target ? ` → ${route.target}` : ''}`);
+  console.log(`  HTTP ${status || '—'}${status === 200 ? '（仓库可见）' : ` ${body.slice(0, 160)}`}`);
+  if (!route.viaProxy) {
+    console.log('  提示：这次是直连。若你在另一个 PowerShell 窗口设的 $env:HTTPS_PROXY，它不会进到这里；');
+    console.log('       把代理交给本工具最省事：node tools/publish-release.mjs --proxy http://127.0.0.1:7892');
+  }
+  return { status, route, url };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const o = parsePublishArgs(process.argv.slice(2));
   if (o.help) {
     console.log('usage: node tools/publish-release.mjs [--tag <tag>] [--dist <dir>] [--repo <owner/name>] [--token <t>]');
-    console.log('                                        [--attempts <n>] [--api <url>] [--uploads <url>] [--dry-run]');
+    console.log('                                        [--attempts <n>] [--proxy <url>] [--api <url>] [--uploads <url>]');
+    console.log('                                        [--check] [--dry-run]');
+  } else if (o.check) {
+    checkConnectivity(o);
   } else {
     publish(o);
   }

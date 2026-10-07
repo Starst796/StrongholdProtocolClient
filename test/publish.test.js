@@ -22,7 +22,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { curlArgs, expectResponse } from '../tools/publish-release.mjs';
+import { curlArgs, envProxy, expectResponse, parseCurlRoute } from '../tools/publish-release.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TOOLS = path.join(ROOT, 'tools');
@@ -67,6 +67,67 @@ describe('the curl invocation for an asset upload', () => {
     assert.ok(!args.some((a) => a.includes('token=t')), 'a token in a URL ends up in logs and proxies');
     // and it is the last argument that is the URL
     assert.equal(args[args.length - 1], 'https://uploads.github.com/repos/o/n/releases/1/assets?name=a.zip');
+  });
+
+  test('an explicit proxy is handed to curl as -x, on uploads too', () => {
+    const proxied = curlArgs('https://uploads.github.com/x', { method: 'POST', file: 'f.zip', proxy: 'http://127.0.0.1:7892' });
+    const i = proxied.indexOf('-x');
+    assert.ok(i !== -1, 'the proxy must be passed as -x');
+    assert.equal(proxied[i + 1], 'http://127.0.0.1:7892');
+    // ...and it must not disturb the streaming setup
+    assert.ok(proxied.includes('-T') && proxied.includes('Expect:'));
+    assert.ok(!curlArgs('https://example/x').includes('-x'), 'no -x when nothing was asked for');
+  });
+});
+
+describe('knowing which route curl took', () => {
+  test('names the environment variable curl used', () => {
+    // Real `curl -v` output (8.13 on Windows) for a proxied HTTPS request.
+    const stderr = [
+      "* Uses proxy env variable https_proxy == 'http://127.0.0.1:7892'",
+      '*   Trying 127.0.0.1:7892...',
+      '* CONNECT tunnel: HTTP/1.1 negotiated',
+      '* Establish HTTP proxy tunnel to api.github.com:443',
+    ].join('\n');
+    const route = parseCurlRoute(stderr);
+    assert.equal(route.viaProxy, true);
+    assert.equal(route.proxy, 'http://127.0.0.1:7892');
+    assert.match(route.source, /https_proxy/);
+    assert.equal(route.target, 'api.github.com:443');
+  });
+
+  test('recognises an explicit -x (curl does not print the env line for it)', () => {
+    const stderr = [
+      '*   Trying 127.0.0.1:7892...',
+      '* Establish HTTP proxy tunnel to uploads.github.com:443',
+    ].join('\n');
+    const route = parseCurlRoute(stderr);
+    assert.equal(route.viaProxy, true, 'a tunnel means a proxy, however it was configured');
+    assert.match(route.source, /-x/);
+    assert.equal(route.target, 'uploads.github.com:443');
+  });
+
+  test('reports a direct connection as direct', () => {
+    const stderr = '*   Trying 140.82.121.6:443...\n* Connected to api.github.com (140.82.121.6) port 443';
+    const route = parseCurlRoute(stderr);
+    assert.equal(route.viaProxy, false);
+    assert.equal(route.source, '直连');
+    assert.equal(route.target, 'api.github.com:443');
+    assert.equal(parseCurlRoute('').viaProxy, false);
+    assert.equal(parseCurlRoute(undefined).source, '未知');
+  });
+
+  test('envProxy reports what curl would read, and nothing when nothing is set', () => {
+    // Only GitHub (HTTPS) matters here, so https_proxy is the first place to look.
+    assert.deepEqual(envProxy({ https_proxy: 'http://127.0.0.1:7892' }), { url: 'http://127.0.0.1:7892', name: 'https_proxy' });
+    assert.deepEqual(envProxy({ HTTPS_PROXY: 'http://a:1' }), { url: 'http://a:1', name: 'HTTPS_PROXY' });
+    // https_proxy wins over the uppercase spelling (curl's rule), and all_proxy is the last resort
+    assert.equal(envProxy({ https_proxy: 'http://lower:1', HTTPS_PROXY: 'http://upper:1' }).url, 'http://lower:1');
+    assert.equal(envProxy({ ALL_PROXY: 'socks5://127.0.0.1:7891' }).url, 'socks5://127.0.0.1:7891');
+    // Uppercase HTTP_PROXY alone is deliberately ignored: it never applies to an HTTPS request
+    assert.equal(envProxy({ HTTP_PROXY: 'http://127.0.0.1:7892' }), null);
+    assert.equal(envProxy({}), null);
+    assert.equal(envProxy({ https_proxy: '   ' }), null);
   });
 });
 

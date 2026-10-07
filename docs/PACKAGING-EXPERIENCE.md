@@ -183,6 +183,8 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 更新提示不出现 | 先看 feed 是否真的可达（`curl -sSL …/releases/latest/download/latest.json`）：Docker 别名只认**正式发布**，draft/prerelease 不生效；再看 `build.json` 的 `client.build` 是否 ≥ feed 的 `build`；被"忽略此版本"记过就等更新的 build（`localStorage.sp.shell.skipUpdate`） |
 | 想测更新但不想真发布 | 起假 feed（`feed-server.mjs --port 8199`）→ `node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json` → CDP 查 `#sp-upd`。`--build 0` 必须被拒绝、`--empty` 必须静默 |
 | 发布大包时报 `GitHub 返回了非 JSON 响应（HTTP 100）` | curl 的 `Expect: 100-continue`：483 MB 的请求会先问一句，上传中途断掉时那个 `100 Continue` 就成了最后看到的"状态码"。修法是 `-T`（**流式**发文件，别用 `--data-binary @file`——那会先整份读进内存）+ 空 `Expect:` 头。已修，并有单测钉住参数 |
+| 设了 `$env:HTTPS_PROXY` 但代理软件显示 0 流量 | curl **确实**读这个变量（`curl -v` 会打印 `Uses proxy env variable https_proxy == '…'`），但 `$env:X=` 只对**当前这个 shell 及其子进程**有效：换个窗口、或在设之前就把 node 起好了，变量都进不去。另外 GitHub 全是 HTTPS，**只设大写 `HTTP_PROXY` 永远不生效**（curl 对大写的 `http_proxy` 明确忽略，防 httpoxy）。排查/绕过：`node tools/publish-release.mjs --check`（报告 curl 实际走的路线）或 `--proxy http://127.0.0.1:7892`（显式 `-x`）。注意 `NO_PROXY` 若含 github.com 会把代理绕过去 |
+| 以为"能上 GitHub 就不用代理" | 直连能通不代表能传 483 MB：实测直连 `api.github.com` 200，但大文件传到一半会被掐（表现为 `HTTP 100`/`curl: (52)`）。要么走代理，要么接受重试 |
 | 重新发布会卡在第一个附件（`HTTP 204` 被当成错） | `DELETE /releases/assets/<id>` 返回 **204 无正文**，解析器却要求 JSON。空正文必须算成功。已修，`test/publish.test.js` 钉住 |
 | 几百 MB 传一半断了 | GitHub 的 release 附件**不支持断点续传**，只能整份重传：`publish-release.mjs` 默认重试 3 次、4xx 不重试、低于 10 KB/s 持续 2 分钟即中断转重试。**直接重复执行该命令即可**，同名附件先删后传，不会重复 |
 | 想让"有新版本"提示不出现 | 保证 `releases/latest` 指向的那个 release 里的 `latest.json` 的 `build` ≤ 客户端的 `client.build`；或者干脆别发（没 feed 就没提示）。**注意**：别名会被最近一次正式发布抢走，所以别往这个仓库发无关 release |
