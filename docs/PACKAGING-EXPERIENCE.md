@@ -182,6 +182,11 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 覆盖安装后存档（干员调配/设置/续连）没了 | 那是**卸载**造成的，不是覆盖：Android 只要求签名一致 + versionCode 不降。历史上"必须删了重下"多半是安装器点错或空间不足；真换签名（debug → release）的那一次才必须卸载，所以**尽早定下正式签名** |
 | 更新提示不出现 | 先看 feed 是否真的可达（`curl -sSL …/releases/latest/download/latest.json`）：Docker 别名只认**正式发布**，draft/prerelease 不生效；再看 `build.json` 的 `client.build` 是否 ≥ feed 的 `build`；被"忽略此版本"记过就等更新的 build（`localStorage.sp.shell.skipUpdate`） |
 | 想测更新但不想真发布 | 起假 feed（`feed-server.mjs --port 8199`）→ `node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json` → CDP 查 `#sp-upd`。`--build 0` 必须被拒绝、`--empty` 必须静默 |
+| 发布大包时报 `GitHub 返回了非 JSON 响应（HTTP 100）` | curl 的 `Expect: 100-continue`：483 MB 的请求会先问一句，上传中途断掉时那个 `100 Continue` 就成了最后看到的"状态码"。修法是 `-T`（**流式**发文件，别用 `--data-binary @file`——那会先整份读进内存）+ 空 `Expect:` 头。已修，并有单测钉住参数 |
+| 重新发布会卡在第一个附件（`HTTP 204` 被当成错） | `DELETE /releases/assets/<id>` 返回 **204 无正文**，解析器却要求 JSON。空正文必须算成功。已修，`test/publish.test.js` 钉住 |
+| 几百 MB 传一半断了 | GitHub 的 release 附件**不支持断点续传**，只能整份重传：`publish-release.mjs` 默认重试 3 次、4xx 不重试、低于 10 KB/s 持续 2 分钟即中断转重试。**直接重复执行该命令即可**，同名附件先删后传，不会重复 |
+| 想让"有新版本"提示不出现 | 保证 `releases/latest` 指向的那个 release 里的 `latest.json` 的 `build` ≤ 客户端的 `client.build`；或者干脆别发（没 feed 就没提示）。**注意**：别名会被最近一次正式发布抢走，所以别往这个仓库发无关 release |
+| 给 `publish()` 写集成测试时整个测试挂死 | `publish()` **从头到尾是同步的**（`spawnSync` + curl），在同一个进程里跑它会把事件循环占满——而假 API 服务器就在那个循环里，于是 curl 永远等不到响应。假服务器必须在**别的进程**，或者把 `publish()` 放到子进程里跑（`test/publish.test.js` 用后者）。同理：`req.resume()` 必须在挂 `data` 监听**之后**，否则请求体已被 flowing 模式吃掉、`end` 永远不触发 |
 
 ## 7. 交付
 

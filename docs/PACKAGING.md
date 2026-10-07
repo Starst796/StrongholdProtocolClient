@@ -451,8 +451,12 @@ node tools/publish-release.mjs --dry-run  # 先看要传什么
 
 - 需要 token：`GITHUB_TOKEN` / `GH_TOKEN`（classic PAT 的 `repo`，或 fine-grained 的 Contents 读写）。**只从环境变量读，不落库**。
 - tag 形如 `v0.2.0-b1`；同名 tag 已存在时复用那个 release 并**替换同名附件**（补发用）。
-- 上传前会核对文件大小与 `latest.json` 是否一致，免得 feed 指向一个 sha256 对不上的包。
-- 发布后自检：`curl -sSL https://github.com/<repo>/releases/latest/download/latest.json` 里应能看到刚发的 `build`。
+- **上传顺序是"附件在前、`latest.json` 最后"**：feed 一旦可见，它指向的两个包必须已经在了。反过来的话，客户端会先看到"有新版本"，点下载却是 404。
+- 每个附件默认最多试 **3 次**（`--attempts n` 可调）。几百 MB 的上传在家庭网络下被打断是常态，重试是唯一可行的办法（GitHub 的 release 附件**不支持断点续传**，每次重试都是重头传）。中断会打印原因，4xx（token 不对、名字被占）不重试，直接报错。
+- **失败后重复执行本命令是安全的**：release 已存在会复用，同名附件会先删后传，不会产生重复。
+- 上传走 `curl -T`（流式，不把 483 MB 读进内存）并显式禁用 `Expect: 100-continue`；传输"卡住"（低于 10 KB/s 持续 2 分钟）会主动中断转入重试，而不是干等一小时。
+- 上传后各自核对大小；`--api` / `--uploads` 可指向别的地址（GitHub Enterprise，或本地假 API 做测试）。
+- 发布后自检：`curl -sSL https://github.com/<repo>/releases/latest/download/latest.json` 里应能看到刚发的 `build`；命令本身也会自动查一次并告诉你结果（别名有几秒到几十秒缓存，刚发完可能还没生效）。
 
 ### 14.4 客户端看到什么、点了做什么
 
