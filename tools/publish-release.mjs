@@ -35,6 +35,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, loadConfig } from './package-client.mjs';
+import { expectedSigner, verifyApkSigner } from './android-signing.mjs';
 
 const API_DEFAULT = 'https://api.github.com';
 const UPLOADS_DEFAULT = 'https://uploads.github.com';
@@ -203,6 +204,9 @@ export function publish(o = {}) {
   const attempts = Math.max(1, Number(o.attempts ?? 3) || 3);
   // Retry pacing: the first wait is this long, the second twice that. Not a CLI flag — tests take it to 0.
   const retryWaitMs = Number.isFinite(Number(o.retryWaitMs)) ? Math.max(0, Number(o.retryWaitMs)) : 15000;
+  // The APK signer check (tools/android-signing.mjs). Not a CLI flag either: it is the gate that keeps an APK
+  // signed by another machine's key from reaching players, so only tests replace it.
+  const signerCheck = o.signerCheck ?? verifyApkSigner;
   // `--proxy` wins over the environment: with `-x` there is no doubt about the route (see --check).
   const proxy = String(o.proxy ?? '').trim();
   const env = envProxy();
@@ -228,6 +232,14 @@ export function publish(o = {}) {
     }
     const size = fs.statSync(file).size;
     if (size !== asset.size) throw new Error(`${asset.name} 与 latest.json 不一致（${size} ≠ ${asset.size}）—— 重新打包再发`);
+    // Last gate before the world sees it: an APK signed by another key cannot update an installed one, so the
+    // player would be told "签名不一致" and have to uninstall (losing their save). See tools/android-signing.mjs.
+    if (platform === 'android') {
+      const signer = signerCheck(file, { expected: expectedSigner(config) });
+      if (signer.ok === false) throw new Error(`${asset.name} 无法发布：\n${signer.reason}`);
+      if (signer.ok === null) log(`publish-release: 注意 —— 没有核对 ${asset.name} 的签名（${signer.reason}）`);
+      else log(`publish-release: ${asset.name} 签名 ${signer.sha256}${signer.reason ? `（${signer.reason}）` : '（与项目一致）'}`);
+    }
     uploads.push({ name: asset.name, file });
   }
   if (!uploads.length) throw new Error('latest.json 没有任何可下载的产物（win / android 都缺）—— 检查打包结果');

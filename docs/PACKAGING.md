@@ -194,14 +194,38 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 - **可测的部分**：`MiniHostServer` 是纯 Java（不依赖 Android API），可以 `javac` 到桌面 JVM 上、用真实 HTTP/WebSocket 客户端压一遍（握手、分片、16/64 位长度、UTF-8、ping-pong、二进制拒绝、未掩码拒绝、keep-alive、并发、5 MB 文件逐字节校验、端口顺延；`Harness.java` 传 `nolength` 还能把 chunked 这条路也走一遍）；桥的页面侧（`offline/loopback.js` 的 `createRemoteServerSocket` + `offline/host-mobile.js`）用真实 `server/net.js` + `lobby.js` 在 Node 里跑（`test/host-mobile.test.js`，含"帧比引擎先到"那条竞态用例）。
 - **真机验证过（雷电模拟器 + `adb`）**：入口出现、`对局域网开放` 后在 `172.16.1.15:47822` 监听、另一台机器（`adb forward`）用浏览器方式把整套 payload（index.html 引用的 27 个资源）取下来、WebSocket 握手 → `hello`→`welcome` → `room.create` → 第二个访客进同一个房间、主机端「进入本地服务器」连到自己（标题页显示"已连接服务器"）、重载时访客被干净断开且端口继续托管。仍未在真机上验证的：不同 Wi-Fi/AP 隔离下的连通性、以及真机多人的手感。
 
-产物：`mobile/android/app/build/outputs/apk/debug/app-debug.apk`（debug 签名，可直接安装）。安装：`adb install -r <apk>`，或把 APK 拷到手机点开（需允许「安装未知应用」）。
+产物：`mobile/android/app/build/outputs/apk/debug/app-debug.apk`（**项目签名 key**，可直接安装）。安装：`adb install -r <apk>`，或把 APK 拷到手机点开（需允许「安装未知应用」）。
 
-发布用的 release APK 需要自己签名：
+### 签名：一把 key，全机器一致（`client.config.json` 的 `android.signerSha256`）
+
+**为什么有这一节**：Android 只允许"新包与已装应用**同一个证书** + versionCode 不降"的覆盖安装。而 Android Studio / AGP 会在**每台机器上各自生成一份** debug keystore（`~/.android/debug.keystore`），所以换台机器打出来的包签名不同——玩家会看到「签名不一致」，**只能卸载重装，存档（localStorage）随之丢失**。0.2.1 就是这么发的（0.2.0 与更早的包都在最初那台机器上打的，所以一直没暴露）。
+
+规则：
+
+- **项目 key = 最初那台机器的 debug keystore**，证书 SHA-256 = `80f08c97…3744`（就是 `client.config.json` 里的 `signerSha256`，公开信息，故意提交）。
+- `mobile/android/app/build.gradle` 在**配置期**解析 keystore 并核对指纹，**不符就拒绝构建**（不是警告）。解析顺序：
+  1. `-Psp.keystore=<path>`（Gradle 参数）
+  2. `SP_KEYSTORE=<path>`（环境变量）
+  3. `mobile/android/local.properties` 里的 `sp.keystore=<path>`（该文件已 gitignore）
+  4. `~/.android/debug.keystore`（默认；凭据默认 `android` / `androiddebugkey` / `android`，可用 `sp.keystore.password` / `sp.key.alias` / `sp.key.password` 覆盖）
+- 打包后还会**再验一次产物**（`tools/package-android.mjs` 用 `apksigner verify --print-certs`），发到 GitHub 之前**第三次**验（`tools/publish-release.mjs`，指纹不符直接拒绝上传）。三道闸共用 `tools/android-signing.mjs`。
+- 换机器：把最初那台的 `~/.android/debug.keystore`（2618 字节，SHA-256 `e8ddf6fe91df2b7c95579e14c8e7ab42e08fd9ea60256df07734c7f64c12f1aa`）复制过去即可，无需其它配置；丢了这把 key 就再也发不出"能覆盖安装"的包（只能让所有人卸载一次），**请离线备份**。
+
+```powershell
+# 别的机器上确认自己用的是项目 key（构建时会打印，也可以直接查）
+& "$env:LOCALAPPDATA\Android\Sdk\build-tools\36.0.0\apksigner.bat" verify --print-certs app-debug.apk
+# 期望 Signer #1 certificate SHA-256 digest: 80f08c97e4b24eb62b415df034b069ae4381d8cfb1d96895a5a9c1471b613744
+
+# 故意用错的 key 试守卫（应立刻失败，并列出双方指纹）
+$env:SP_KEYSTORE="$env:TEMP\wrong.jks"; .\gradlew.bat assembleDebug
+```
+
+**代价与后续**：目前发的仍是 `debuggable=true` 的 debug 包。好处是**保住了已装玩家的存档**（从最初那台机器装的 0.1.x / 0.2.0 直接覆盖升级）；代价是包可被调试。将来若换成正式 release key，**所有人**都要卸载一次——那时再决定（届时可先做存档导出/导入）。除了 0.2.1（在另一台机器上打的，那批人已经/需要卸载一次），其它版本不受影响。
+
+需要单独出未 debug 的 release 包时（**必须用同一把 key**，否则一样装不上）：
 
 ```bash
-keytool -genkeypair -keystore stronghold.jks -alias stronghold -keyalg RSA -keysize 2048 -validity 10000
-# 在 mobile/android/app/build.gradle 里加 signingConfigs 并让 release 用它，然后：
-node tools/package-android.mjs --release
+node tools/package-android.mjs --release     # 用项目 key 签；signingConfigs.sp 同时供 debug / release 使用
 ```
 
 ### 首次准备 Android SDK
@@ -459,6 +483,7 @@ node tools/publish-release.mjs --dry-run  # 先看要传什么
   - `node tools/publish-release.mjs --proxy http://127.0.0.1:7892`：把代理**显式**交给 `curl -x`（覆盖环境变量），不再有"变量到底有没有传进去"的疑问。
   - 每次发布会打印一行 `代理 = …（来源）`；设了 `NO_PROXY` 也会提醒（它若含 github.com，代理会被绕过）。
 - 上传后各自核对大小；`--api` / `--uploads` 可指向别的地址（GitHub Enterprise，或本地假 API 做测试）。
+- **上传前核对 APK 签名**（`tools/android-signing.mjs`）：指纹与 `client.config.json` 的 `android.signerSha256` 不符就拒绝上传——这是"玩家装不上更新"的最后一道闸（`apksigner` 不在时只警告，见 §5「签名」）。
 - 发布后自检：`curl -sSL https://github.com/<repo>/releases/latest/download/latest.json` 里应能看到刚发的 `build`；命令本身也会自动查一次并告诉你结果（别名有几秒到几十秒缓存，刚发完可能还没生效）。
 
 ### 14.4 客户端看到什么、点了做什么

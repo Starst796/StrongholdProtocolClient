@@ -162,11 +162,20 @@ describe('publish() against a fake GitHub API', () => {
    * in-process would block this test's event loop — and the fake API here lives in that same loop, so curl would
    * wait forever for a server that can no longer answer. (Learned the hard way: the first version of this test hung.)
    */
-  function runPublish(opts) {
+  function runPublish(opts, signerStub = 'ok') {
+    // The APK signer check is injected, and a function cannot cross into a child process as JSON — so the stub is
+    // named here and materialised inside the child. Default 'ok' because these tests exercise the upload mechanics
+    // with files that are not real APKs; 'fail' is used by the test that proves publish refuses to upload a
+    // wrong-key APK. The real check is covered by test/signing.test.js.
+    const stub = signerStub === 'ok' ? 'opts.signerCheck = () => ({ ok: true, sha256: "a".repeat(64) });'
+      : signerStub === 'fail' ? 'opts.signerCheck = () => ({ ok: false, sha256: "b".repeat(64), reason: "signature does not match" });'
+        : '';
     const code = [
       `import { publish } from ${JSON.stringify(pathToFileURL(path.join(TOOLS, 'publish-release.mjs')).href)};`,
+      `const opts = ${JSON.stringify(opts)};`,
+      stub,
       'try {',
-      `  const r = publish(${JSON.stringify(opts)});`,
+      '  const r = publish(opts);',
       "  console.log('OK ' + JSON.stringify(r.uploads));",
       '} catch (e) {',
       "  console.log('ERR ' + (e && e.message || e));",
@@ -284,6 +293,26 @@ describe('publish() against a fake GitHub API', () => {
       }
     });
   }
+
+  test('refuses to publish an APK signed by another key', async () => {
+    // The gate that matters for players: an APK from another machine cannot update an installed one, so uploading
+    // it would hand every phone a "signature does not match" error and force an uninstall.
+    const api = await fakeApi();
+    const dist = makeDist();
+    try {
+      const run = await runPublish({
+        dist: dist.dir, repo: 'o/n', token: 'fake', attempts: 1, quiet: true,
+        api: `http://127.0.0.1:${api.port}`, uploads: `http://127.0.0.1:${api.port}`,
+      }, 'fail');
+      assert.equal(run.status, 1, `must refuse:\n${run.out}`);
+      assert.match(run.out, /^ERR /m, 'the failure is reported');
+      assert.match(run.out, /signature does not match/, 'and names the reason');
+      assert.deepEqual(api.seen.uploads, [], 'nothing reaches the release — not even latest.json');
+    } finally {
+      await api.close();
+      fs.rmSync(dist.dir, { recursive: true, force: true });
+    }
+  });
 
   test('refuses to publish when the feed names an artifact the build does not have', async () => {
     const api = await fakeApi();

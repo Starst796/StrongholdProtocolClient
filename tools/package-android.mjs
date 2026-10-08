@@ -15,7 +15,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CLIENT_ROOT, assembleClient, parseCommonArgs } from './package-client.mjs';
+import { CLIENT_ROOT, assembleClient, loadConfig, parseCommonArgs } from './package-client.mjs';
+import { expectedSigner, findAndroidSdk, verifyApkSigner } from './android-signing.mjs';
 
 const MOBILE = path.join(CLIENT_ROOT, 'mobile');
 const ANDROID = path.join(MOBILE, 'android');
@@ -39,11 +40,7 @@ function run(cmd, args, cwd, { shell = false } = {}) {
 
 /** Android SDK location (env first, then the per-OS default the SDK manager installs into). */
 function sdkDir() {
-  const candidates = [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT];
-  if (process.platform === 'win32') candidates.push(path.join(process.env.LOCALAPPDATA || '', 'Android', 'Sdk'));
-  else if (process.platform === 'darwin') candidates.push(path.join(os.homedir(), 'Library', 'Android', 'sdk'));
-  else candidates.push(path.join(os.homedir(), 'Android', 'Sdk'));
-  return candidates.find((c) => c && fs.existsSync(c)) || '';
+  return findAndroidSdk();
 }
 
 /**
@@ -92,8 +89,16 @@ run(process.platform === 'win32' ? 'gradlew.bat' : './gradlew', [task, '--no-dae
 const apkDir = path.join(ANDROID, 'app', 'build', 'outputs', 'apk');
 const found = fs.existsSync(apkDir) ? fs.readdirSync(apkDir, { recursive: true }).filter((f) => String(f).endsWith('.apk')) : [];
 if (!found.length) throw new Error(`没有生成 APK：${apkDir}`);
+
+// What gradle produced must carry the project's signing key (mobile/android/app/build.gradle already refuses to
+// build with a different one; this is the check on the artifact itself, which is what actually reaches a phone).
+const wantedSigner = expectedSigner(loadConfig());
 for (const f of found) {
   const full = path.join(apkDir, f);
   const st = fs.statSync(full);
   console.log(`package-android: ${path.relative(CLIENT_ROOT, full).split(path.sep).join('/')} (${(st.size / 1048576).toFixed(1)} MB)`);
+  const signer = verifyApkSigner(full, { expected: wantedSigner, sdkDir: sdk });
+  if (signer.ok === false) throw new Error(`package-android: ${path.basename(full)}\n${signer.reason}`);
+  if (signer.ok === null) console.warn(`package-android: 无法核对签名（${signer.reason}）—— 发布前请另行确认`);
+  else console.log(`package-android: 签名 ${signer.sha256}${wantedSigner ? '（与 client.config.json 一致）' : '（未钉住指纹）'}`);
 }

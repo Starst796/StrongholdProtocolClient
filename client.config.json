@@ -4,5 +4,9 @@
   "update": {
     "repo": "Starst796/StrongholdProtocolClient",
     "feed": "https://github.com/Starst796/StrongholdProtocolClient/releases/latest/download/latest.json"
+  },
+  "android": {
+    "signerSha256": "80f08c97e4b24eb62b415df034b069ae4381d8cfb1d96895a5a9c1471b613744",
+    "keystoreHint": "项目的 Android 签名 key —— 也就是最初那台机器上 ~/.android/debug.keystore 里的 debug key。换机器打包时把这个文件复制过去（或设 SP_KEYSTORE / -Psp.keystore 指向它）：指纹必须与 signerSha256 一致，否则拒绝出包。指纹是公开信息，故意提交在这里。"
   }
 }

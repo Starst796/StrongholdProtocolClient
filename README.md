@@ -166,6 +166,14 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 - **忽略此版本**：记住 `sp.shell.skipUpdate`，这一版不再提示，直到有更新的 build。
 - 检查是**尽力而为**：离线、feed 不可达、JSON 坏掉、schema 不认识，都只是"没有更新信息"，不会弹错、不会卡启动。`client.config.json` 的 `update.feed` 留空则**完全不发更新请求**。
 
+## 安装包与签名（重要）
+
+Android 只会用新包**覆盖安装**与它**签名相同**的应用。本项目的 APK 由一把固定的 key 签名（证书 SHA-256 `80f08c97…3744`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §5「签名」）—— 打包时指纹不符会直接拒绝出包，所以从本仓库正常打出来的包都能覆盖安装。
+
+**唯一例外**：`v0.2.1-b2` 那个 APK 是在另一台机器上打的，用的是那台机器自己生成的 debug key，因此它装不上 0.2.0（会提示「签名不一致」）。装过那一个版本的话，需要**卸载一次**再装正常版本（存档会丢，见下）。其它版本（0.1.x / 0.2.0 / 之后的版本）互相之间都不受影响。
+
+存档（续连 token、干员调配、设置）存在应用私有数据里，**只有卸载才会清空**——覆盖安装不会。所以：不要用"卸载再装"来解决别的问题。
+
 发布方的步骤（生成 feed → 上传 GitHub Releases）见 [docs/PACKAGING.md](docs/PACKAGING.md) §14。
 
 ## 许可

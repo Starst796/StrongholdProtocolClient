@@ -1,5 +1,90 @@
 apply plugin: 'com.android.application'
 
+// --- signing: one project key, checked by fingerprint ----------------------------------------------------------
+// Android Studio / AGP *generate* a debug keystore per machine at ~/.android/debug.keystore. So a debug APK built on
+// a second machine is signed by a different key than the one already installed, and Android refuses the update with
+// "签名不一致" (the only way out is an uninstall — which takes the player's localStorage save with it). That is
+// exactly what 0.2.1 ran into: built on another machine, it would not install over 0.2.0.
+//
+// So the project pins one key. client.config.json's android.signerSha256 names the certificate every packaged APK
+// must carry; this script refuses to build when the keystore it resolves does not match, instead of quietly signing
+// with whatever that machine happens to have. Resolution order:
+//
+//   1. -Psp.keystore=<path>                an explicit Gradle property
+//   2. $SP_KEYSTORE                        an environment variable
+//   3. local.properties: sp.keystore=...   the gitignored per-machine file (mobile/android/local.properties)
+//   4. ~/.android/debug.keystore           the conventional location — what the project key happens to be, since the
+//                                          first releases were built on the machine that owns that file
+//
+// Credentials default to the well-known debug-keystore ones (store and key password `android`, alias
+// `androiddebugkey`) and are overridable the same three ways: sp.keystore.password / sp.key.alias / sp.key.password.
+def spProps = new Properties()
+def spPropsFile = rootProject.file('local.properties')
+if (spPropsFile.exists()) spPropsFile.withInputStream { spProps.load(it) }
+def spSetting = { String key, String env, String fallback ->
+    def fromProject = project.hasProperty(key) ? project.property(key)?.toString() : null
+    def fromEnv = env ? System.getenv(env) : null
+    return fromProject ?: fromEnv ?: spProps.getProperty(key) ?: fallback
+}
+
+def spConfigFile = file("${rootDir}/../../client.config.json")
+if (!spConfigFile.exists()) {
+    throw new GradleException("找不到 client.config.json（${spConfigFile}）—— 项目签名（android.signerSha256）从那里读")
+}
+def spConfig = new groovy.json.JsonSlurper().parse(spConfigFile)
+def spExpectedSigner = (spConfig.android?.signerSha256 ?: '').toString().trim().toLowerCase()
+def spSkipSignCheck = spSetting('sp.skipSigningCheck', 'SP_SKIP_SIGNING_CHECK', '') == 'true'
+
+def spKeystore = new File(spSetting('sp.keystore', 'SP_KEYSTORE', "${System.getProperty('user.home')}/.android/debug.keystore"))
+def spStorePassword = spSetting('sp.keystore.password', 'SP_KEYSTORE_PASSWORD', 'android')
+def spKeyAlias = spSetting('sp.key.alias', 'SP_KEY_ALIAS', 'androiddebugkey')
+def spKeyPassword = spSetting('sp.key.password', 'SP_KEY_PASSWORD', 'android')
+
+if (!spKeystore.exists()) {
+    throw new GradleException("""找不到签名 keystore：${spKeystore}
+
+这个项目用一把固定的 key 签名（见 client.config.json 的 android.signerSha256）—— 否则另一台机器打出来的包
+无法覆盖安装（Android 会报"签名不一致"，玩家只能卸载重装，存档会丢）。换机器时请把最初那台机器的
+~/.android/debug.keystore 复制过来，或者指明它的位置（三选一）：
+
+  -Psp.keystore=<path>                      Gradle 参数
+  SP_KEYSTORE=<path>                        环境变量
+  mobile/android/local.properties 里写       sp.keystore=<path>
+""")
+}
+
+/** SHA-256 of the keystore's signing certificate — the fingerprint every packaged APK must carry. */
+def spKeystoreFingerprint = {
+    def ks
+    try {
+        // Java 9+ auto-detects JKS / PKCS12 from the file itself.
+        ks = java.security.KeyStore.getInstance(spKeystore, spStorePassword.toCharArray())
+    } catch (Exception ignored) {
+        ks = java.security.KeyStore.getInstance('JKS')
+        spKeystore.withInputStream { ks.load(it, spStorePassword.toCharArray()) }
+    }
+    def alias = ks.aliases().find { ks.isKeyEntry(it) }
+    if (alias == null) throw new GradleException("keystore ${spKeystore} 里没有带私钥的条目")
+    def cert = ks.getCertificate(alias)
+    def md = java.security.MessageDigest.getInstance('SHA-256')
+    return md.digest(cert.encoded).collect { String.format('%02x', it & 0xff) }.join('')
+}
+
+def spActualSigner = spKeystoreFingerprint()
+logger.lifecycle("签名：${spKeystore}（证书 SHA-256 ${spActualSigner}）")
+if (!spExpectedSigner) {
+    logger.warn('client.config.json 没有 android.signerSha256 —— 本次构建的签名没有被钉住，发布前请自己确认指纹')
+} else if (spActualSigner != spExpectedSigner) {
+    def msg = """签名指纹与项目不符：
+  keystore  ${spKeystore}
+  实际      ${spActualSigner}
+  期望      ${spExpectedSigner}
+用它打出的包无法覆盖安装已发布的版本（会提示"签名不一致"）。请把项目的那把 keystore 复制过来，
+或用 -Psp.keystore / SP_KEYSTORE / local.properties 指向它。"""
+    if (spSkipSignCheck) logger.warn(msg + '\n（sp.skipSigningCheck=true：本次继续，绝不能用于发布）')
+    else throw new GradleException(msg)
+}
+
 android {
     namespace = "site.starst.stronghold"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,8 +101,25 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        // The project key (see the block above): both build types use it, so a debug build made here installs over
+        // a release build made there, and the fingerprint is the same one the publish step verifies.
+        sp {
+            storeFile spKeystore
+            storePassword spStorePassword
+            keyAlias spKeyAlias
+            keyPassword spKeyPassword
+            // v2 only, exactly like every APK shipped so far (minSdk 24 needs no v1 JAR signature).
+            v1SigningEnabled false
+            v2SigningEnabled true
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.sp
+        }
         release {
+            signingConfig signingConfigs.sp
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
