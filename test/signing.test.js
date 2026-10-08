@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { expectedSigner, findApksigner, parseSignerSha256, verifyApkSigner } from '../tools/android-signing.mjs';
+import { apksignerCommand, expectedSigner, findApksigner, parseSignerSha256, verifyApkSigner } from '../tools/android-signing.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** An existing file to hand verifyApkSigner: the signer itself is injected through `run`. */
@@ -132,6 +132,37 @@ describe('verifying an APK before it is shipped', () => {
     const res = verifyApkSigner(SELF, { expected: '', sdkDir: 'x', run: runner(0, apksignerOutput(OTHER_KEY)) });
     assert.equal(res.ok, true);
     assert.equal(res.sha256, OTHER_KEY);
+  });
+});
+
+describe('how apksigner is invoked', () => {
+  test('Windows runs the .bat through a shell (spawnSync cannot execute a .bat directly)', () => {
+    // Without the shell, spawnSync fails with `status: null` and no output — which looks like "apksigner is silent"
+    // rather than "apksigner never ran". This is the bug that broke the first packaging run of this check.
+    const win = apksignerCommand('C:/tmp/app-debug.apk', 'C:/Users/x/AppData/Local/Android/Sdk/build-tools/36.0.0/apksigner.bat', 'win32');
+    assert.equal(win.shell, true);
+    assert.deepEqual(win.args, ['verify', '--print-certs', 'C:/tmp/app-debug.apk']);
+    assert.match(win.cmd, /apksigner\.bat/);
+  });
+
+  test('paths with spaces are quoted on Windows, left alone elsewhere', () => {
+    const spaced = 'C:/Program Files/Android/Sdk/build-tools/36.0.0/apksigner.bat';
+    const win = apksignerCommand('C:/a b/c d.apk', spaced, 'win32');
+    assert.equal(win.cmd, `"${spaced}"`, 'the program path is quoted or cmd.exe splits it at the space');
+    assert.equal(win.args[2], '"C:/a b/c d.apk"', 'and so is the APK path');
+    const nix = apksignerCommand('/tmp/a b.apk', '/opt/sdk/apksigner', 'linux');
+    assert.equal(nix.shell, false, 'elsewhere apksigner is an executable script with a shebang');
+    assert.equal(nix.cmd, '/opt/sdk/apksigner');
+    assert.equal(nix.args[2], '/tmp/a b.apk', 'the args array needs no quoting without a shell');
+  });
+
+  test('a tool that never started says so instead of reporting an empty result', () => {
+    const res = verifyApkSigner(SELF, {
+      expected: PROJECT_KEY, sdkDir: 'x',
+      run: () => ({ status: null, stdout: '', stderr: '', error: new Error('spawnSync apksigner.bat EINVAL') }),
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /无法运行 apksigner.*EINVAL/);
   });
 });
 

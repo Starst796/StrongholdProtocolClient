@@ -60,6 +60,18 @@ export function parseSignerSha256(text) {
 }
 
 /**
+ * How to run apksigner for one APK. Exported and platform-parameterised so the Windows trap below is pinned by a
+ * test rather than rediscovered: `<sdk>/build-tools/<v>/apksigner` is a **shell script** (`.bat` on Windows), and
+ * `spawnSync` without a shell cannot execute it — it fails with `status: null` and an empty output, which reads as
+ * "apksigner printed nothing" instead of "apksigner never ran".
+ */
+export function apksignerCommand(file, apksigner, platform = process.platform) {
+  const win = platform === 'win32';
+  const quote = (s) => (win && /\s/.test(s) ? `"${s}"` : s);
+  return { cmd: quote(apksigner), args: ['verify', '--print-certs', quote(file)], shell: win };
+}
+
+/**
  * Verify one APK's signer against the project's expected one.
  *
  * @param {string} file  the APK
@@ -75,12 +87,15 @@ export function verifyApkSigner(file, { expected = '', sdkDir = undefined, run =
   if (!run && !apksigner) {
     return { ok: wanted ? null : true, sha256: null, apksigner: null, reason: '找不到 apksigner（Android SDK build-tools 不在）' };
   }
-  const call = run ?? ((cmd, args) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }));
-  const res = call(apksigner ?? 'apksigner', ['verify', '--print-certs', file]);
+  const call = run ?? ((cmd, args, options) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, ...options }));
+  const { cmd, args, shell } = apksignerCommand(file, apksigner ?? 'apksigner');
+  const res = call(cmd, args, { shell });
   const out = `${res?.stdout ?? ''}\n${res?.stderr ?? ''}`;
   const sha256 = parseSignerSha256(out);
   if (!sha256) {
-    return { ok: false, sha256: null, apksigner, reason: `apksigner 没有读出证书（退出码 ${res?.status}）：${out.trim().split('\n').slice(0, 3).join(' / ')}` };
+    // `res.error` is the difference between "apksigner ran and said nothing" and "apksigner never started".
+    const why = res?.error ? `无法运行 apksigner：${res.error.message}` : `apksigner 没有读出证书（退出码 ${res?.status}）`;
+    return { ok: false, sha256: null, apksigner, reason: `${why}：${out.trim().split('\n').slice(0, 3).join(' / ') || '(无输出)'}` };
   }
   if (!wanted) return { ok: true, sha256, apksigner, reason: 'client.config.json 没有钉住签名指纹' };
   if (sha256 !== wanted) {
