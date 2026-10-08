@@ -62,7 +62,7 @@ function dirBytes(dir) {
 }
 
 export function buildDesktop(o = {}) {
-  const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed });
+  const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
 
   const builder = pkgBin(path.join(DESKTOP, 'node_modules', 'electron-builder'), 'electron-builder');
   const electronDist = path.join(DESKTOP, 'node_modules', 'electron', 'dist');

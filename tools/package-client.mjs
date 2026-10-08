@@ -109,6 +109,11 @@ export function assembleClient(opts = {}) {
   // The update feed the shell may poll (docs/PACKAGING.md §10). Empty = the clients make no update request at all,
   // which is the default for a fork that publishes nowhere.
   const feed = String(opts.feed ?? config.update?.feed ?? '').trim();
+  // This build's number. Normally release.json (the last release); a release in progress passes its own, because
+  // release.json is only advanced once the artifacts exist — without this the payload would be stamped with the
+  // *previous* build and the client would keep offering itself as an update.
+  const release = readRelease();
+  const build = Number.isInteger(opts.build) && opts.build > 0 ? opts.build : release.build;
   const offline = !!opts.offline;
   const out = path.resolve(opts.out ?? DEFAULT_OUT);
 
@@ -197,9 +202,8 @@ export function assembleClient(opts = {}) {
   // free of timestamps so an unchanged payload stays byte-identical (and therefore incremental). `client` is *this*
   // repo's release identity: the build counter is what an update check compares (see tools/release-meta.mjs).
   const game = gameInfo(gameRoot);
-  const release = readRelease();
   const version = String(JSON.parse(fs.readFileSync(path.join(CLIENT_ROOT, 'package.json'), 'utf8')).version || '');
-  const client = { version, build: release.build, versionCode: androidVersionCode(version, release.build) };
+  const client = { version, build, versionCode: androidVersionCode(version, build) };
   writeGenerated('build.json', JSON.stringify({ server, game, client, feed }, null, 2) + '\n');
 
   // Derive the patched files into the payload (from the pristine source — never touches the game checkout).
@@ -382,7 +386,7 @@ export function assertServerNeedsOnlyShims(payloadRoot) {
 
 /** CLI arguments shared by package-client / package-desktop / package-android. */
 export function parseCommonArgs(argv) {
-  const o = { server: undefined, game: undefined, out: undefined, feed: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, offline: false, help: false };
+  const o = { server: undefined, game: undefined, out: undefined, feed: undefined, build: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, offline: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -393,6 +397,8 @@ export function parseCommonArgs(argv) {
     else if (key === '--out') o.out = val();
     // Override the update feed from client.config.json (docs/PACKAGING.md §10): a staging feed, or a local one.
     else if (key === '--feed') o.feed = val();
+    // The build number to stamp into the payload (package-release passes the one it is producing).
+    else if (key === '--build') o.build = Number(val());
     else if (key === '--quiet') o.quiet = true;
     else if (key === '--release') o.release = true;
     // `--dir` is the desktop default now; still accepted so older command lines keep working.
@@ -409,6 +415,6 @@ export function parseCommonArgs(argv) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const o = parseCommonArgs(process.argv.slice(2));
-  if (o.help) console.log('usage: node tools/package-client.mjs [--server <address>] [--game <checkout>] [--out <dir>] [--feed <url>] [--offline] [--quiet]');
-  else assembleClient({ server: o.server, gameRoot: o.game, out: o.out, feed: o.feed, offline: o.offline, log: o.quiet ? () => {} : console.log });
+  if (o.help) console.log('usage: node tools/package-client.mjs [--server <address>] [--game <checkout>] [--out <dir>] [--feed <url>] [--build <n>] [--offline] [--quiet]');
+  else assembleClient({ server: o.server, gameRoot: o.game, out: o.out, feed: o.feed, build: o.build, offline: o.offline, log: o.quiet ? () => {} : console.log });
 }

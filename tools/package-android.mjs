@@ -59,7 +59,7 @@ if (o.help) {
   console.log('usage: node tools/package-android.mjs [--server <address>] [--game <checkout>] [--release] [--skip-install]');
   process.exit(0);
 }
-const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed });
+const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
 
 const cli = path.join(MOBILE, 'node_modules', '@capacitor', 'cli', 'bin', 'capacitor');
 if (!fs.existsSync(cli)) {

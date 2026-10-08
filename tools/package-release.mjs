@@ -182,6 +182,9 @@ function buildAndroid({ version, o, log }) {
   if (o.game) args.push('--game', o.game);
   if (o.server) args.push('--server', o.server);
   if (o.feed) args.push('--feed', o.feed);
+  // The build number this release is producing: the payload inside the APK must carry it, or the client would keep
+  // offering itself as an update (release.json is only advanced after the artifacts exist).
+  if (Number.isInteger(o.build) && o.build > 0) args.push('--build', String(o.build));
   if (o.release) args.push('--release');
   if (o.skipInstall) args.push('--skip-install');
   run(process.execPath, args, { env: { ...process.env, JAVA_HOME: jdk, ANDROID_HOME: sdk } });
@@ -285,7 +288,7 @@ export function release(o = {}) {
     run(process.execPath, ['--test']);
   }
 
-  const built = buildDesktop({ server: o.server, gameRoot: o.game, feed: o.feed, portable: o.portable, skipInstall: o.skipInstall });
+  const built = buildDesktop({ server: o.server, gameRoot: o.game, feed: o.feed, build, portable: o.portable, skipInstall: o.skipInstall });
   const dist = path.join(CLIENT_ROOT, 'build', 'dist');
   fs.mkdirSync(dist, { recursive: true });
   const artifacts = [];
@@ -311,7 +314,7 @@ export function release(o = {}) {
   let android = null;
   if (o.android) {
     log('package-release: 打 Android APK…');
-    android = buildAndroid({ version, o, log });
+    android = buildAndroid({ version, o: { ...o, build }, log });
     if (android) {
       artifacts.push(android.dst);
       log(`package-release: ${path.relative(CLIENT_ROOT, android.dst).split(path.sep).join('/')} —— ${mb(fs.statSync(android.dst).size)}`);

@@ -444,6 +444,25 @@ describe('client payload assembly', () => {
     assert.equal(r.server, '192.168.1.9:3000');
     assert.match(readFileSync(path.join(r.out, 'js', 'runtime-config.js'), 'utf8'), /"192\.168\.1\.9:3000"/);
   });
+
+  test('an explicit build number wins over release.json (a release in progress)', () => {
+    // release.json is only advanced once the artifacts exist, so a release must hand its own number down: without
+    // this the APK payload was stamped with the *previous* build, and the client kept offering itself as an update.
+    const explicit = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, build: 99, out: path.join(game.root, 'build', 'b99'), log: () => {} });
+    const stamped = JSON.parse(readFileSync(path.join(explicit.out, 'build.json'), 'utf8'));
+    assert.equal(stamped.client.build, 99);
+    assert.equal(stamped.client.versionCode, androidVersionCode(stamped.client.version, 99));
+
+    const tracked = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out: path.join(game.root, 'build', 'btracked'), log: () => {} });
+    assert.equal(JSON.parse(readFileSync(path.join(tracked.out, 'build.json'), 'utf8')).client.build, readRelease().build);
+  });
+
+  test('the release driver hands its number to both sub-builds', () => {
+    const src = readFileSync(path.join(ROOT, 'tools', 'package-release.mjs'), 'utf8');
+    assert.match(src, /buildDesktop\(\{[^}]*build,/, 'the desktop payload gets it');
+    assert.match(src, /args\.push\('--build', String\(o\.build\)\)/, 'and the APK sub-build is told');
+    assert.match(src, /buildAndroid\(\{ version, o: \{ \.\.\.o, build \}, log \}\)/, 'which needs it in its own options');
+  });
 });
 
 test('the packaged clients default to a server the player runs locally', () => {

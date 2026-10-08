@@ -136,24 +136,27 @@ describe('verifying an APK before it is shipped', () => {
 });
 
 describe('how apksigner is invoked', () => {
-  test('Windows runs the .bat through a shell (spawnSync cannot execute a .bat directly)', () => {
-    // Without the shell, spawnSync fails with `status: null` and no output — which looks like "apksigner is silent"
-    // rather than "apksigner never ran". This is the bug that broke the first packaging run of this check.
-    const win = apksignerCommand('C:/tmp/app-debug.apk', 'C:/Users/x/AppData/Local/Android/Sdk/build-tools/36.0.0/apksigner.bat', 'win32');
-    assert.equal(win.shell, true);
-    assert.deepEqual(win.args, ['verify', '--print-certs', 'C:/tmp/app-debug.apk']);
-    assert.match(win.cmd, /apksigner\.bat/);
+  test('Windows hands the .bat to cmd.exe (spawnSync cannot execute a batch file)', () => {
+    // Without it, spawnSync fails with `status: null` and no output — which looks like "apksigner is silent" rather
+    // than "apksigner never ran". This is the bug that broke the first packaging run of this check.
+    const win = apksignerCommand('C:/tmp/app-debug.apk', 'C:/sdk/build-tools/36.0.0/apksigner.bat', 'win32', 'cmd.exe');
+    assert.equal(win.cmd, 'cmd.exe');
+    assert.equal(win.shell, false, 'one pre-quoted command line: no shell:true (Node warns: it cannot escape args)');
+    assert.deepEqual(win.args.slice(0, 3), ['/d', '/s', '/c']);
+    assert.equal(win.args[3], '"C:/sdk/build-tools/36.0.0/apksigner.bat" verify --print-certs "C:/tmp/app-debug.apk"');
   });
 
-  test('paths with spaces are quoted on Windows, left alone elsewhere', () => {
-    const spaced = 'C:/Program Files/Android/Sdk/build-tools/36.0.0/apksigner.bat';
-    const win = apksignerCommand('C:/a b/c d.apk', spaced, 'win32');
-    assert.equal(win.cmd, `"${spaced}"`, 'the program path is quoted or cmd.exe splits it at the space');
-    assert.equal(win.args[2], '"C:/a b/c d.apk"', 'and so is the APK path');
+  test('Windows quotes every path, so a space in the SDK or APK path cannot split the command', () => {
+    const win = apksignerCommand('C:/a b/c d.apk', 'C:/Program Files/Android/Sdk/build-tools/36.0.0/apksigner.bat', 'win32', 'cmd.exe');
+    assert.ok(win.args[3].startsWith('"C:/Program Files/'), 'the program path is quoted');
+    assert.ok(win.args[3].endsWith('"C:/a b/c d.apk"'), 'and so is the APK path');
+  });
+
+  test('elsewhere apksigner is an executable script and no shell is involved', () => {
     const nix = apksignerCommand('/tmp/a b.apk', '/opt/sdk/apksigner', 'linux');
-    assert.equal(nix.shell, false, 'elsewhere apksigner is an executable script with a shebang');
     assert.equal(nix.cmd, '/opt/sdk/apksigner');
-    assert.equal(nix.args[2], '/tmp/a b.apk', 'the args array needs no quoting without a shell');
+    assert.deepEqual(nix.args, ['verify', '--print-certs', '/tmp/a b.apk'], 'with no shell the args need no quoting');
+    assert.equal(nix.shell, false);
   });
 
   test('a tool that never started says so instead of reporting an empty result', () => {

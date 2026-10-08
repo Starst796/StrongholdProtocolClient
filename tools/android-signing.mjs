@@ -62,13 +62,17 @@ export function parseSignerSha256(text) {
 /**
  * How to run apksigner for one APK. Exported and platform-parameterised so the Windows trap below is pinned by a
  * test rather than rediscovered: `<sdk>/build-tools/<v>/apksigner` is a **shell script** (`.bat` on Windows), and
- * `spawnSync` without a shell cannot execute it — it fails with `status: null` and an empty output, which reads as
- * "apksigner printed nothing" instead of "apksigner never ran".
+ * `spawnSync` cannot execute a batch file — it fails with `status: null` and an empty output, which reads as
+ * "apksigner printed nothing" rather than "apksigner never ran".
+ *
+ * The command line is handed to cmd.exe as one pre-quoted string, so `shell: true` is never needed (Node warns about
+ * it: with a shell, arguments are concatenated rather than escaped).
  */
-export function apksignerCommand(file, apksigner, platform = process.platform) {
-  const win = platform === 'win32';
-  const quote = (s) => (win && /\s/.test(s) ? `"${s}"` : s);
-  return { cmd: quote(apksigner), args: ['verify', '--print-certs', quote(file)], shell: win };
+export function apksignerCommand(file, apksigner, platform = process.platform, comspec = process.env.ComSpec || 'cmd.exe') {
+  if (platform === 'win32') {
+    return { cmd: comspec, args: ['/d', '/s', '/c', `"${apksigner}" verify --print-certs "${file}"`], shell: false };
+  }
+  return { cmd: apksigner, args: ['verify', '--print-certs', file], shell: false };
 }
 
 /**
