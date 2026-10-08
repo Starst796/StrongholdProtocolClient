@@ -1,7 +1,7 @@
 {
   "name": "stronghold-protocol-client",
   "productName": "StrongholdProtocol",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "卫戍协议：盟约 · 桌面客户端（Electron 壳：本地静态资源 + 连接 game.starst.site）",
   "license": "GPL-3.0-or-later",

@@ -1,6 +1,6 @@
 {
   "name": "stronghold-protocol-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "卫戍协议：盟约 · 端侧客户端打包（Windows .exe / Android .apk）：把游戏静态资源摊平成一个 payload，默认连接 game.starst.site",
   "license": "GPL-3.0-or-later",

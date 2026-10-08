@@ -32,11 +32,12 @@ export const SIM_PRIVATE = Object.freeze(['nodedata.js']);
 /**
  * server/ files the offline payload never ships, as server-relative paths (lower-case): index.js (the node:http
  * entry), data.js (replaced by the browser stand-in generated from offline/data-provider.js), sim/nodeData.js
- * (Node-only sim loader), match/StubMatch.js (the platform test double) and packs.js (the content-pack registry is
- * a serving concern — the payload ships the generated /packs/index.json instead). Nested `index.js` files (e.g.
- * sim/content/index.js) are real modules and must ship.
+ * (Node-only sim loader), match/StubMatch.js (the platform test double), packs.js (the content-pack registry is
+ * a serving concern — the payload ships the generated /packs/index.json instead) and update.js (0.2.1's update
+ * package, which reads node:fs / node:path and is only reached from the private http/ boot layer). Nested
+ * `index.js` files (e.g. sim/content/index.js) are real modules and must ship.
  */
-export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js', 'packs.js']);
+export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js', 'packs.js', 'update.js']);
 
 /**
  * server/ subtrees the payload never ships: `http/` is the whole node:http layer (config, static files, MIME,
