@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLIENT_ROOT, assembleClient, parseCommonArgs } from './package-client.mjs';
+import { CLIENT_ROOT, assembleClient, assertArtComplete, parseCommonArgs } from './package-client.mjs';
 
 const DESKTOP = path.join(CLIENT_ROOT, 'desktop');
 
@@ -63,6 +63,7 @@ function dirBytes(dir) {
 
 export function buildDesktop(o = {}) {
   const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
+  assertArtComplete(built);
 
   const builder = pkgBin(path.join(DESKTOP, 'node_modules', 'electron-builder'), 'electron-builder');
   const electronDist = path.join(DESKTOP, 'node_modules', 'electron', 'dist');

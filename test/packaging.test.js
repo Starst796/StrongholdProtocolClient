@@ -21,7 +21,7 @@ import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, CONTRACT_FILE, MIME_FILE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { buildPatch, applyHooks } from '../tools/regen-patch.mjs';
-import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, OFFLINE_FILES, assertServerNeedsOnlyShims, parseCommonArgs } from '../tools/package-client.mjs';
+import { assembleClient, assertArtComplete, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, OFFLINE_FILES, assertServerNeedsOnlyShims, parseCommonArgs } from '../tools/package-client.mjs';
 import { androidVersionCode, readRelease } from '../tools/release-meta.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
 
@@ -63,6 +63,9 @@ function makeGameFixture() {
   write(root, 'public/assets/char/x.png', 'png');
   // data/, shared/, server/
   write(root, 'data/chess.json', '{"a":1}');
+  // The art manifest: generated locally by the game's fetch-assets tool and gitignored there, so the assembler must
+  // carry it and the packaging shells must refuse to build without it (a payload missing it renders no art at all).
+  write(root, 'data/assets.json', JSON.stringify({ version: 1, generator: 'fixture', stats: {}, groups: { chars: { a: { pathes: ['/assets/char/x.png'] } } } }, null, 2));
   write(root, 'shared/constants.js', "export const PROTOCOL_VERSION = 1;\nexport const APP_VERSION = '0.1.0';\n");
   write(root, 'server/sim/simdata.js', 'export function getSimData() { return null; }\n');
   write(root, 'server/sim/units.js', 'export const U = 1;\n');
@@ -389,8 +392,9 @@ describe('client payload assembly', () => {
     for (const [name, rel] of OFFLINE_FILES) {
       assert.equal(readFileSync(path.join(out, rel), 'utf8'), readFileSync(path.join(ROOT, 'offline', name), 'utf8'));
     }
-    // the in-page server's data source lists the data files the payload mirrors
-    assert.match(readFileSync(path.join(out, 'server', 'data.js'), 'utf8'), /files: \["chess"\]/);
+    // the in-page server's data source lists the data files the payload mirrors (assets.json included: the client
+    // adopts the art manifest through data.get('assets'))
+    assert.match(readFileSync(path.join(out, 'server', 'data.js'), 'utf8'), /files: \["assets","chess"\]/);
     // ...and server/ ships the runtime modules only: no entry point, no fs data loader, no Node-only / stub files
     assert.ok(!existsSync(path.join(out, 'server', 'index.js')));
     assert.ok(!existsSync(path.join(out, 'server', 'nodeData.js')));
@@ -445,8 +449,36 @@ describe('client payload assembly', () => {
     assert.match(readFileSync(path.join(r.out, 'js', 'runtime-config.js'), 'utf8'), /"192\.168\.1\.9:3000"/);
   });
 
-  test('an explicit build number wins over release.json (a release in progress)', () => {
-    // release.json is only advanced once the artifacts exist, so a release must hand its own number down: without
+  test('a payload without the art manifest is refused, not shipped', () => {
+    // 0.2.1 build 3 shipped a client that showed no art at all: data/assets.json is generated locally (gitignored in
+    // the game repo) and was absent at build time. The client starts, connects and plays — nothing fails until
+    // somebody installs it. So a packaging run must stop here instead.
+    const out = path.join(game.root, 'build', 'no-manifest');
+    const manifest = path.join(game.root, 'data', 'assets.json');
+    const saved = readFileSync(manifest, 'utf8');
+    try {
+      rmSync(manifest);
+      const built = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {}, warn: () => {} });
+      assert.equal(built.missingArtManifest, true, 'assembleClient reports it');
+      assert.throws(() => assertArtComplete(built), /data\/assets\.json 不在/, 'and the shells must refuse to package it');
+    } finally {
+      writeFileSync(manifest, saved);
+    }
+  });
+
+  test('a complete payload passes the art check', () => {
+    const built = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out: path.join(game.root, 'build', 'art-ok'), log: () => {}, warn: () => {} });
+    assert.equal(built.missingArtManifest, false);
+    assert.equal(built.missingAssets, false);
+    assert.doesNotThrow(() => assertArtComplete(built));  });
+
+  test('both packaging shells call the check', () => {
+    for (const rel of ['tools/package-desktop.mjs', 'tools/package-android.mjs']) {
+      assert.match(readFileSync(path.join(ROOT, rel), 'utf8'), /assertArtComplete\(built\)/, `${rel} must refuse to package an artless payload`);
+    }
+  });
+
+  test('an explicit build number wins over release.json (a release in progress)', () => {    // release.json is only advanced once the artifacts exist, so a release must hand its own number down: without
     // this the APK payload was stamped with the *previous* build, and the client kept offering itself as an update.
     const explicit = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, build: 99, out: path.join(game.root, 'build', 'b99'), log: () => {} });
     const stamped = JSON.parse(readFileSync(path.join(explicit.out, 'build.json'), 'utf8'));

@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CLIENT_ROOT, assembleClient, loadConfig, parseCommonArgs } from './package-client.mjs';
+import { CLIENT_ROOT, assembleClient, assertArtComplete, loadConfig, parseCommonArgs } from './package-client.mjs';
 import { expectedSigner, findAndroidSdk, verifyApkSigner } from './android-signing.mjs';
 
 const MOBILE = path.join(CLIENT_ROOT, 'mobile');
@@ -60,6 +60,7 @@ if (o.help) {
   process.exit(0);
 }
 const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
+assertArtComplete(built);
 
 const cli = path.join(MOBILE, 'node_modules', '@capacitor', 'cli', 'bin', 'capacitor');
 if (!fs.existsSync(cli)) {

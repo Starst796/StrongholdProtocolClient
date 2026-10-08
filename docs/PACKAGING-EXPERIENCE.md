@@ -14,10 +14,15 @@
 | `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | ~818 MB，exe 本身 234.3 MB | **默认形态**，双击到首屏 ~0.3 s |
 | `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | ~253 MB | 单文件，首屏 **~24 s**（每次启动都把整个应用解到 `%TEMP%`） |
 | `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | ~228 MB | debug 包；`--release` 出未签名的 release |
-| `npm test` | —— | 129 用例 | `packaging/picker/update/status/host`；没有游戏 checkout 时自动 skip |
+| `npm test` | —— | 173 用例 | `packaging/picker/update/signing/publish/status/host`；没有游戏 checkout 时自动 skip |
 
 默认连 `localhost:3000`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
 **本打包仓库**（`Stronghold-Protocol-Client`）／**服务器启动器**（`Stronghold-Protocol-Server-Launcher`，另一件事）。
+
+**打包前必须有的两样本机素材**（都在游戏仓库、都**不进版本库**，缺了就打不出能看的客户端）：
+`public/assets/**`（约 462 MB，`tools/fetch-assets.mjs` / `npm run assets`）与 **`data/assets.json`**（素材清单，
+客户端没有它就会**一张图都不显示**）。`npm run client:desktop` / `client:android` 会在缺失时**直接报错中止**
+（`assertArtComplete`）。
 
 前置：Node 22+；一个已经 `npm install` + `npm run assets` 的**游戏仓库 checkout**（素材约 265 MB，不在 GitHub 里）；
 打 apk 另需 JDK 17+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。
@@ -176,6 +181,7 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | `Number(null) === 0` | 可选数字别随手 `Number()`：`null` 必须保持"没有"，否则"未设置"会被当成 0（公告的 `until` 就栽过） |
 | 上游 0.2.0 后打包全红：`DATA_SHIM_JS not found` | `server/index.js` 被拆成 `server/http/*`，契约声明搬到了 **`server/http/static.js`**（`CONTRACT_FILE`），MIME 表搬到 `server/http/files.js`（`MIME_FILE`）。改这两个常量即可，别再回去读 `index.js` |
 | 下游能跑但文件多出一堆、守卫报 `node:http` | 0.2.0 的 `server/http/**` 是纯 HTTP 层（`node:http`/`node:zlib`/`node:fs`），payload 不该带：`SERVER_PRIVATE_DIRS = ['http']` + `SERVER_PRIVATE` 里加 `packs.js`（那层由各自的壳替代：Electron `serve.mjs` / Android `MiniHostServer` / Capacitor WebView） |
+| 客户端装上去**一张图都不显示**（能进大厅、能连服务器，但所有素材都是空/占位） | `data/assets.json`（客户端解析素材的清单）没进 payload。它是**本机生成、不进游戏仓库**的（`tools/fetch-assets.mjs` 产出，和 `public/assets/**` 一样）。0.2.1 build 3 就这样发过：打包时该文件恰好不在仓库里，payload 少了它，客户端请求 `/data/assets.json` 得到 404 → 全部素材加载失败，而打包过程**毫无异常**。现在 `assembleClient` 会报 `missingArtManifest`，两个打包壳（desktop/android）用 `assertArtComplete()` **直接中止**。修法：在游戏仓库跑 `npm run assets` 再打包。**排查时先看这一条**（`curl` 一下 payload 的 `/data/assets.json` 是否 200） |
 | 上游 0.2.1 后打包全红：守卫报 `server/update.js imports node:fs` | 0.2.1 新增的更新包 `server/update.js`（先被 `server/http/boot.js` 引用），payload 里是死文件：`SERVER_PRIVATE` 里加 `update.js` 即可。（**注意**：payload 是就地更新的，上一次失败运行留下的 `server/update.js` 要等构建末尾的清理才消失，而守卫在清理**之前**跑——所以第一次修好之后仍会红一次，先删 `build/client/www` 再重打） |
 | 换台机器打的 APK 装不上、提示「签名不一致」 | **每台机器的 ~/.android/debug.keystore 都是各自生成的**（AGP 首次构建时造一份），所以"在另一台机器上打的包"= 另一把钥匙 = 无法覆盖安装，只能卸载重装（存档丢）。0.2.1 就这么发过。现在项目把 key 钉在 `client.config.json` 的 `android.signerSha256`，构建期核对指纹、不符拒绝构建；`package-android` 与 `publish-release` 再各验一次产物。换机器=复制那一份 `debug.keystore`（或 `SP_KEYSTORE` 指过去），**并离线备份** |
 | 想确认"这个包到底是哪把 key 签的" | `apksigner verify --print-certs <apk>`（build-tools 里）；或用会话里的 `apk-signer.mjs`，只取文件尾部 1 MB 就能读出证书（GitHub 的资源 CDN 对 `Range` 返回 501，所以远端包得整包下或换直连） |
