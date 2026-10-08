@@ -136,20 +136,20 @@ describe('verifying an APK before it is shipped', () => {
 });
 
 describe('how apksigner is invoked', () => {
-  test('Windows hands the .bat to cmd.exe (spawnSync cannot execute a batch file)', () => {
-    // Without it, spawnSync fails with `status: null` and no output — which looks like "apksigner is silent" rather
-    // than "apksigner never ran". This is the bug that broke the first packaging run of this check.
-    const win = apksignerCommand('C:/tmp/app-debug.apk', 'C:/sdk/build-tools/36.0.0/apksigner.bat', 'win32', 'cmd.exe');
-    assert.equal(win.cmd, 'cmd.exe');
-    assert.equal(win.shell, false, 'one pre-quoted command line: no shell:true (Node warns: it cannot escape args)');
-    assert.deepEqual(win.args.slice(0, 3), ['/d', '/s', '/c']);
-    assert.equal(win.args[3], '"C:/sdk/build-tools/36.0.0/apksigner.bat" verify --print-certs "C:/tmp/app-debug.apk"');
+  test('Windows runs the .bat through a shell, with every path pre-quoted', () => {
+    // Two failures are pinned here: without shell:true, spawnSync cannot execute a .bat (status null, empty output,
+    // which reads as "apksigner is silent"); with a pre-quoted whole command line handed to cmd.exe, Node escapes the
+    // quotes into \"…\" and cmd cannot find the program.
+    const win = apksignerCommand('C:/tmp/app-debug.apk', 'C:/sdk/build-tools/36.0.0/apksigner.bat', 'win32');
+    assert.equal(win.shell, true, 'a .bat needs cmd.exe');
+    assert.equal(win.cmd, '"C:/sdk/build-tools/36.0.0/apksigner.bat"', 'the program path is quoted, so a space cannot split it');
+    assert.deepEqual(win.args, ['verify', '--print-certs', '"C:/tmp/app-debug.apk"']);
   });
 
-  test('Windows quotes every path, so a space in the SDK or APK path cannot split the command', () => {
-    const win = apksignerCommand('C:/a b/c d.apk', 'C:/Program Files/Android/Sdk/build-tools/36.0.0/apksigner.bat', 'win32', 'cmd.exe');
-    assert.ok(win.args[3].startsWith('"C:/Program Files/'), 'the program path is quoted');
-    assert.ok(win.args[3].endsWith('"C:/a b/c d.apk"'), 'and so is the APK path');
+  test('a space in the SDK or APK path survives on Windows', () => {
+    const win = apksignerCommand('C:/a b/c d.apk', 'C:/Program Files/Android/Sdk/build-tools/36.0.0/apksigner.bat', 'win32');
+    assert.equal(win.cmd, '"C:/Program Files/Android/Sdk/build-tools/36.0.0/apksigner.bat"');
+    assert.equal(win.args[2], '"C:/a b/c d.apk"');
   });
 
   test('elsewhere apksigner is an executable script and no shell is involved', () => {

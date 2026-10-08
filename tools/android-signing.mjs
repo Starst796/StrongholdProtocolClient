@@ -60,17 +60,20 @@ export function parseSignerSha256(text) {
 }
 
 /**
- * How to run apksigner for one APK. Exported and platform-parameterised so the Windows trap below is pinned by a
- * test rather than rediscovered: `<sdk>/build-tools/<v>/apksigner` is a **shell script** (`.bat` on Windows), and
- * `spawnSync` cannot execute a batch file — it fails with `status: null` and an empty output, which reads as
- * "apksigner printed nothing" rather than "apksigner never ran".
+ * How to run apksigner for one APK. Exported and platform-parameterised so the Windows traps below are pinned by
+ * tests rather than rediscovered:
  *
- * The command line is handed to cmd.exe as one pre-quoted string, so `shell: true` is never needed (Node warns about
- * it: with a shell, arguments are concatenated rather than escaped).
+ *   * `<sdk>/build-tools/<v>/apksigner` is a **shell script** (`.bat` on Windows). `spawnSync` cannot execute a
+ *     batch file, and it fails with `status: null` and no output — which reads as "apksigner printed nothing" rather
+ *     than "apksigner never ran". (That is how the first packaging run of this check failed.)
+ *   * so Windows needs `shell: true`, which makes Node concatenate the arguments instead of escaping them (what
+ *     DEP0190 warns about — harmless here: every path is pre-quoted below and nothing user-supplied reaches the line)
+ *   * passing a pre-quoted *whole command line* to cmd.exe does not work: Node escapes its quotes into `\"…\"` and
+ *     cmd answers `'\"C:\…\apksigner.bat\"' is not recognized` (that is how the second run failed).
  */
-export function apksignerCommand(file, apksigner, platform = process.platform, comspec = process.env.ComSpec || 'cmd.exe') {
+export function apksignerCommand(file, apksigner, platform = process.platform) {
   if (platform === 'win32') {
-    return { cmd: comspec, args: ['/d', '/s', '/c', `"${apksigner}" verify --print-certs "${file}"`], shell: false };
+    return { cmd: `"${apksigner}"`, args: ['verify', '--print-certs', `"${file}"`], shell: true };
   }
   return { cmd: apksigner, args: ['verify', '--print-certs', file], shell: false };
 }
