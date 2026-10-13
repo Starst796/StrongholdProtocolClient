@@ -1,21 +1,23 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材）。进游戏前的菜单有三条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**创建服务器**让**客户端自己当服务器**并对局域网开放（桌面版跑在 Electron 主进程，Android 跑在原生 Java 侧 + WebView 里的同一套引擎）；**加入服务器**则连到别处的服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码都从本地读，进对局不用重新下载素材。进游戏前的菜单有三条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**创建服务器**让**客户端自己当服务器**并对局域网开放（桌面版跑在 Electron 主进程，Android 跑在原生 Java 侧 + WebView 里的同一套引擎）；**加入服务器**则连到别处的服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端需要的改动（含个别上游小 bug 的修复）以补丁形式打在 payload 上（见下）。
 
 ```
-npm run release             # 一键发布：对齐上游版本号 → 跑测试 → 打 exe(+zip) 与 apk → git 提交（入口 package.bat / package.sh）
-npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB，双击即开）
-npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（约 192 MB）
+npm run release             # 一键发布：对齐上游版本号 → 跑测试 → 打 exe(+zip) 与 apk → 清单/增量包/体积报告 → git 提交
+npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，双击即开）
+npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（0.2.5：529 MB）
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
-npm test                    # 打包流程的单元/契约测试（无游戏 checkout 时相关用例自动跳过）
+npm test                    # 打包流程的单元/契约测试（229 用例；无游戏 checkout 时相关用例自动跳过）
 npm run patch:regen         # 上游更新后重新生成 patches/game-client.patch
 npm run patch:check         # 只检查补丁是否与当前 checkout 同步（不写入）
 ```
 
-详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**。
+已发布版本：**0.2.5（build 6）**，更新源 <https://github.com/Starst796/StrongholdProtocolClient/releases>；客户端启动时会读该仓库 `releases/latest` 的 `latest.json`，发现更新的 build 就在主页提示，Android 可以**应用内增量更新**（只下变化的文件），桌面端给出下载页。
+
+详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**、**清单与体积报告**、**应用内增量更新**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**。
 
 ```
 npm run server:status                                  # 现在多少人在线 / 多少对局在跑
@@ -27,7 +29,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | | 需要 |
 |---|---|
 | 通用 | Node.js 22+；一个**游戏仓库 checkout**（默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets`（素材不在 GitHub 仓里） |
-| exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装，首次约 500 MB） |
+| exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装，约 449 MB） |
 | apk | JDK 17+（`JAVA_HOME`）+ Android SDK（`ANDROID_HOME`，`platforms;android-36`、`build-tools;36.0.0`） |
 
 ## 目录
@@ -37,23 +39,25 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/package-client.mjs` | 把游戏仓库的挂载点摊平成 `build/client/www`，生成 `data.js` / `js/runtime-config.js` / `js/shell/*` / `css/shell-display.css` / `build.json`，并应用 payload 补丁 |
 | `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
-| `patches/game-client.patch` | 客户端改动（4 个文件、7 个 hunk，见下），`git diff` 生成 |
+| `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk：`public/index.html`、`public/js/net.js`、`public/js/screens/room.js`），`git diff` 生成 |
 | `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 创建服务器 / 加入服务器"；「创建服务器」页可对局域网开放（桌面版与 Android 都有），`加入服务器`页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；探测时顺带用一个 `version: 0` 的 `hello` 读出服务器的协议版本（`PROTOCOL_VERSION`），**协议不同的服务器标记为不兼容并拒绝进入**；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程。`android/app/src/main/java/site/starst/stronghold/host/` 是「创建服务器」的原生侧（`MiniHostServer.java` 单端口静态托管 + WebSocket、`AssetStaticSource.java` 直接读 APK 资源、`HostServerPlugin.java` Capacitor 桥） |
-| `client.config.json` | `gameRoot`、`defaultServer` |
-| `tools/payload-inventory.mjs` | payload 清单（每文件 size + sha256）：随包发 `payload.json`、发布成 `payload-<build>.json`，并和上一版清单算差集 / 出体积报告（见 [docs/PACKAGING.md](docs/PACKAGING.md) §15） |
-| `tools/package-release.mjs` | 一键发布驱动：读上游 `APP_VERSION` → 对齐本仓库版本号 → 跑测试 → 打桌面 + APK → 清单 + 体积报告 → 复制到 `build/dist/` → `git commit`（入口 `package.bat` / `package.sh`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §13） |
+| `client.config.json` | `gameRoot`、`defaultServer`、`update.repo` / `update.feed`、`android.signerSha256` |
+| `tools/payload-inventory.mjs`、`tools/payload-delta.mjs`、`tools/zip.mjs` | payload 清单（每文件 size + sha256）：随包发 `payload.json`、发布成 `payload-<build>.json`，和上一版清单算差集、出体积报告（`build/reports/report-<build>.md`）、打增量包 `delta-<base>-<build>.zip`（见 [docs/PACKAGING.md](docs/PACKAGING.md) §15 / §16） |
+| `mobile/android/app/src/main/java/site/starst/stronghold/update/` | 应用内更新的原生侧：`AppUpdatePlugin.java`（读 feed、下载 APK 或增量包、校验 sha256、调用安装器/重载 WebView）、`OverlayStore.java`（可写 overlay：解包、逐文件校验、激活、与 APK 版本对账）、`OverlayRouteProcessor.java`（让 WebView 读到 overlay 文件） |
+| `tools/package-release.mjs` | 一键发布驱动：读上游 `APP_VERSION` → 对齐本仓库版本号 → 跑测试 → 打桌面 + APK → 清单 + 增量包 + 体积报告 → 复制到 `build/dist/` → `git commit`（入口 `package.bat` / `package.sh`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §13） |
+| `tools/publish-release.mjs`、`tools/android-signing.mjs` | 把 `build/dist/` 的产物与 `latest.json` 传到 GitHub Releases（按 feed 里出现的产物上传、`latest.json` 最后），并在上传前核对 APK 签名 |
 | `tools/server-status.mjs` | 查服务器忙不忙（`/healthz`）：单次采样、滚动观察、`--under N` 等空窗（见 §11） |
-| `test/` | `packaging.test.js`（补丁/契约/摊平/增量）、`picker.test.js`（选择页规则）、`host.test.js`（桌面版开服端到端）、`host-mobile.test.js`（Android 原生桥端到端）、`status.test.js`、`trust.test.js` |
+| `test/` | `packaging.test.js`（补丁/契约/摊平）、`picker.test.js`（选择页规则）、`update.test.js`（更新规则）、`publish.test.js`（发布流程，对假 GitHub API）、`signing.test.js`（签名）、`payload-inventory.test.js`、`payload-delta.test.js`、`overlay.test.js`（增量与 Capacitor 接缝）、`host.test.js` / `host-mobile.test.js`（开服端到端）、`status.test.js`、`trust.test.js` |
 
 ## 与游戏仓库的契约（重要）
 
-- **游戏仓库只读**：`git status` 永远干净，`git pull` 不会因为打包而冲突。客户端的改动是补丁：
-  `js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）、`js/screens/lobby.js`（补上观战出错分支漏引的 `ERR`——上游 bug，`ERR is not defined`）、`index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）。
-- 上游改了这 4 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。补丁**不要手改**：客户端改动以「锚定字符串替换」写在 [tools/regen-patch.mjs](tools/regen-patch.mjs)（大段替换体在 [tools/patch-hooks/](tools/patch-hooks/)），跑 `npm run patch:regen` 重新生成即可；[npm test](test/packaging.test.js) 里有一条契约用例会在补丁过期时报错（`patch:check` 同义，可接 CI）。锚点若被上游改写，regen 会明确报出是哪个锚点没找到。
-- `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照 `server/index.js` 校验。
+- **游戏仓库只读**：`git status` 永远干净，`git pull` 不会因为打包而冲突。客户端的改动是补丁，共 **3 个文件、6 个 hunk**：
+  `index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/node-globals.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）、`js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）。
+- 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。补丁**不要手改**：客户端改动以「锚定字符串替换」写在 [tools/regen-patch.mjs](tools/regen-patch.mjs)（大段替换体在 [tools/patch-hooks/](tools/patch-hooks/)），跑 `npm run patch:regen` 重新生成即可；[npm test](test/packaging.test.js) 里有一条契约用例会在补丁过期时报错（`patch:check` 同义，可接 CI）。锚点若被上游改写，regen 会明确报出是哪个锚点没找到。
+- `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照契约文件（`server/http/static.js` 的 `CONTRACT_FILE`）校验。
 - 产物里记录构建来源：payload 的 `build.json` 与 `build/client/manifest.json` 都有 `git describe` + commit + `PROTOCOL_VERSION`。
 
 ## 用法
@@ -76,13 +80,13 @@ node tools/package-client.mjs --game ../Stronghold-Protocol --out D:\client-www
 npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe + 依赖 + resources/）
 ```
 
-| 形态 | 体积 | 启动到首屏 | 说明 |
+| 形态 | 体积（0.2.5 实测） | 启动到可用 | 说明 |
 |---|---|---|---|
-| **目录版（默认）** | 585 MB（解压后） | **约 0.3 s** | 直接双击 `win-unpacked/StrongholdProtocol.exe` |
-| 目录版打成 zip | 321 MB | 解压一次后同上 | 用资源管理器右键"压缩到 zip"即可（本机实测 28 s） |
-| 单文件 `--portable` | 261 MB | **约 24 s** | 每次启动都把整包解压到 `%TEMP%`，所以慢 |
+| **目录版（默认）** | 992.8 MB（未压缩） | **约 1.4 s** | 直接双击 `win-unpacked/StrongholdProtocol.exe`（exe 本身 234.3 MB） |
+| 目录版打成 zip | 638.9 MB | 解压一次后同上 | `npm run release` 会自动压好（deflate） |
+| 单文件 `--portable` | 548.4 MB | **约 60 s** | 单文件比 zip 还小（7z/LZMA），代价是每次启动都要把整包解到 `%TEMP%` |
 
-分发推荐"目录版 + 手动打 zip"：**下载 321 MB，解压一次，之后每次启动都是 0.3 s**；单文件 exe 虽然只大 60 MB 的差距，但每次启动都要解压 585 MB。打包时顺手把 Electron 的 55 个语言包裁到 `zh-CN` / `en-US`（省约 46 MB）。
+分发推荐"目录版 + zip"：下载 639 MB、解压一次，之后每次启动都是 1.4 s；单文件 exe 体积更小，但每次启动都要解压近 1 GB。打包时顺手把 Electron 的语言包裁到 `zh-CN` / `en-US`（省约 46 MB）。
 
 ## 手机端适配（APK）
 
@@ -121,7 +125,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 - **记住上次选择**：桌面端勾上"记住并直接进入"后，下次启动直接进游戏（想换服务器按 **F2**，或用 `--choose-server` 启动）。选择页里按 **Esc** 逐级返回（表单 → 模式菜单），在模式菜单再按 **Esc** 直接关闭选择页回到游戏（对局中按 F2 打开后可用 Esc 退出）。Android 没有 F2，所以每次都显示这个页面（默认不记住），免得换了服务器回不去。
 - **创建服务器（桌面版 / Android）**：主页中间的「创建服务器」进去后可以填**端口**（留空 = 自动分配；默认 `47822`，会记住），再点「对局域网开放」——**客户端自己就是服务器**。页面会显示 `你的局域网IP:端口` 与「复制地址」「进入本地服务器」「关闭」。**填了端口就一定用这个端口**：被占用会直接报错让你改（便于做端口转发 / 防火墙规则），不会偷偷换一个；留空则由系统分配，面板会标「（自动分配）」。「进入本地服务器」把本机客户端指向这个服务器（写 `sp.shell.server` 后重载），于是你和局域网玩家在同一个大厅里开「同盟模拟」。**同伴两种加入方式**：①用**浏览器直接打开 `http://你的IP:端口`**（host 在同一端口托管整套游戏，打开即玩，无需装客户端）；②用自己的客户端走**加入服务器 → 添加服务器**填这个地址（也能用 `/ws` 探测到延迟）。引擎两边是同一套（游戏仓库的 `server/net.js` + `lobby.js` + `match/`），只是跑的地方不同：桌面版跑在 Electron 主进程（`desktop/host-server.mjs`），Android 跑在 WebView 里、由原生 Java 侧 [`MiniHostServer.java`](mobile/android/app/src/main/java/site/starst/stronghold/host/MiniHostServer.java) 提供端口与 WebSocket 帧（见下）。网页版没有这个入口（浏览器不能监听端口）。**注意**：桌面端 `47821` 是客户端自己页面用的端口，填了会被直接拒绝（提示里会说）。详见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 - **网页版不受影响**：浏览器版没有这个页面，服务器永远是自己所在的站点。
-- **重启后不丢本地缓存**：身份 token、干员调配、设置都存在 `localStorage` 里，而它是按"源"隔离的——所以桌面壳固定用 `127.0.0.1:47821`（`desktop/serve.mjs` 的 `DEFAULT_PORT`），每次启动都是同一个源，重启后原样读回（以前每次随机端口 = 每次换源，等于重装）。Android 本来就从固定的 `https://localhost` 提供页面，无需处理。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.4。
+- **重启后不丢本地缓存**：身份 token、干员调配、设置都存在 `localStorage` 里，而它是按"源"隔离的——所以桌面壳固定用 `127.0.0.1:47821`（`desktop/serve.mjs` 的 `DEFAULT_PORT`），每次启动都是同一个源，重启后原样读回（换成随机端口就等于换了源，等于重装）。Android 本来就从固定的 `https://localhost` 提供页面，无需处理。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.4。
 - Android 上连局域网的 `ws://` 需要 APK 打开 `allowMixedContent`（本仓库默认打开，原因见 [docs/PACKAGING.md](docs/PACKAGING.md) §5）。
 - 优先级：`--server <地址>`（本次运行强制）> 命令行/`?server=` > 选择页记住的地址 > 打包时的默认地址。选择页只是把选择写进 `localStorage`（`sp.shell.*`）并重载页面，`js/net.js` 一条代码都没多改。
 
@@ -136,6 +140,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 | `offline/loopback.js` | 内存 WebSocket 双端：客户端侧是 Web 标准 API，服务端侧是 `ws` 接口（`server/net.js` 原样使用）；另有 `createRemoteServerSocket()`——把原生 socket（Android 开服）伪装成同样的 `ws` 接口接进来 |
 | `offline/host-mobile.js` | Android 开服的页面侧：检测到 Capacitor 的 `HostServer` 插件时暴露 `window.__SP_HOST__`（`start`/`stop`/`status`），把插件的 `open`/`frame`/`pong`/`close` 事件接进页内 `Network`，并把大厅的回复经插件发回原生 socket。其他平台上是空操作 |
 | `offline/node-crypto.js`、`offline/node-net.js` | `node:crypto` / `node:net` 的浏览器 shim，由 `index.html` 的 import map 指过去（回环 socket 表现为 loopback 地址，不受限流影响） |
+| `offline/node-globals.js` | 浏览器缺的那几个 Node 全局：`process`（`versions` 故意留空，让 sim 继续按浏览器走）、`setImmediate` / `clearImmediate`。页内引擎用到的就是这两个（`server/match/botEmotes.js` 的 `process.env`、`server/lobby.js` 的 `setImmediate`），缺了会让 `/offline/bootstrap.js` 的静态 import 整条中断、单人模式直接连不上 |
 | `offline/data-provider.js` | `/server/data.js` 的实现（抓取 `/data/*.json`，深冻结，提供与服务器同名的 getter） |
 
 启动模式（优先级从高到低）：`?mode=solo|multi` → `sp.shell.mode`（选择页写入）→ `globalThis.__SP_OFFLINE__`（`--offline` 构建的网页版默认 solo）。**单人模式只提供「独立模拟」**（对局引擎、战斗模拟都在本地，没有服务端跑 AI / 校验的开销）。
@@ -152,7 +157,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 | Android | 原生 Java：[`MiniHostServer.java`](mobile/android/app/src/main/java/site/starst/stronghold/host/MiniHostServer.java) 手写 WebSocket（握手 / 分片 / ping-pong / keep-alive）与静态托管，经 `AssetStaticSource` **直接读 APK 里的资源**（不复制到存储，不额外占空间） | WebView 里的页内服务器（和单人模式同一个 `Network` + `Lobby`，见 [`offline/game-server.js`](offline/game-server.js)） | [`HostServerPlugin.java`](mobile/android/app/src/main/java/site/starst/stronghold/host/HostServerPlugin.java) ↔ [`offline/host-mobile.js`](offline/host-mobile.js)：`open`/`frame`/`pong`/`close` 事件进，`send`/`ping`/`closeConn` 出 |
 
 - 页面上显示 `你的局域网IP:端口`，可「复制地址」发给同一局域网的博士。**端口可选**：留空 = 系统自动分配（面板标「（自动分配）」），填了就**一定用你填的那个**——被占用会报错让你改（做端口转发时这点很重要），端口会记住，下次打开还是它。**浏览器同伴直接打开 `http://你的IP:端口` 即可玩**（同一端口同时提供静态页面与 WebSocket；访客拿到的 `/js/runtime-config.js` 会指向本机 origin 并跳过选择页，自动连上主机）。用自己的客户端也可以：**加入服务器 → 添加服务器**填这个地址（桌面 host 的 `/healthz` 带 CORS，探测能显示版本 / 在线人数）。
-- 访客会从主机下载整套素材（约 290 MB，局域网内），所以首次进较慢；用 exe/apk 客户端加入的同伴则用自己本地的素材，只连 `/ws`，不下载。（Android host 从 APK 资源里流式读取，访客不会用到手机存储。）
+- 访客会从主机下载整套素材（数百 MB，局域网内），所以首次进较慢；用 exe/apk 客户端加入的同伴则用自己本地的素材，只连 `/ws`，不下载。（Android host 从 APK 资源里流式读取，访客不会用到手机存储。）
 - 「进入本地服务器」把本机客户端指向这个服务器（写 `sp.shell.server` 后重载），于是你和局域网玩家在同一个大厅里开「同盟模拟」。Android 上这一步连的是 `ws://127.0.0.1:<端口>`（同一台机器绕一圈，走真实传输），和桌面版行为一致。
 - 数据：桌面版由主进程从 `resources/www/data/*.json` 读盘注入；Android 由 WebView 自己 `fetch('/data/*.json')`（Capacitor 的本地资源服务）。`offline/data-provider.js` 两种都支持；全靠相对路径导入，不需要改游戏仓库。
 - 只是 `ws://` 明文 + 局域网，桌面端**首次启动 Windows 会弹防火墙入站允许**（和 Minecraft 一样）；Android 的 `ws://` 需要 APK 打开 `allowMixedContent` 与 `usesCleartextTraffic`（本仓库默认打开，见 [docs/PACKAGING.md](docs/PACKAGING.md) §5）。
@@ -160,10 +165,10 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 
 ## 客户端内更新提示（exe / apk）
 
-客户端**会自己发现上游更新**并在主页（选择模式）底部提示：「有新版本 · 0.2.0 · build 13 · 64715116 · 下载 217.2 MB」。
+客户端**会自己发现上游更新**并在主页（选择模式）底部提示：「有新版本 · 0.2.5 · build 6 · cf7a9400 · 增量下载 74.7 MB（全量 529.1 MB）」。
 
 - **Android**：「下载并安装」在应用内流式下载 APK（边下边校验 sha256），然后交给系统安装器——签名一致 + `versionCode` 递增（本仓库自带构建号，见 [docs/PACKAGING.md](docs/PACKAGING.md) §14），所以是**覆盖安装，存档与设置都保留**。（Android 不允许静默安装，系统会弹一次确认；首次会引导你去允许「安装未知应用」。）
-- **Android 增量**：有增量包时提示行给的是「增量下载 74.7 MB（全量 455.1 MB）」，按钮变成「下载并更新」——只在应用内下载变化的文件、写进可写层再重载，**不经过安装器**（见 [docs/PACKAGING.md](docs/PACKAGING.md) §16）。失败会自动退回完整安装包。
+- **Android 增量**：有增量包时提示行给的是「增量下载 74.7 MB（全量 529.1 MB）」，按钮变成「下载并更新」——只在应用内下载变化的文件、写进可写层再重载，**不经过安装器**（见 [docs/PACKAGING.md](docs/PACKAGING.md) §16）。失败会自动退回完整安装包。
 - **桌面版**：「打开下载页」用系统浏览器打开该版本的下载地址。当前分发形态是"目录版 + zip"，运行中的程序换不掉自己的文件，所以桌面端到此为止（要真自动更新得换 NSIS 安装器，见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.1 / §14.4）。
 - **忽略此版本**：记住 `sp.shell.skipUpdate`，这一版不再提示，直到有更新的 build。
 - 检查是**尽力而为**：离线、feed 不可达、JSON 坏掉、schema 不认识，都只是"没有更新信息"，不会弹错、不会卡启动。`client.config.json` 的 `update.feed` 留空则**完全不发更新请求**。
@@ -180,13 +185,15 @@ Android 只会用新包**覆盖安装**与它**签名相同**的应用。本项�
 
 ## payload 清单与体积报告
 
-每份 payload 都带一份**清单** `payload.json`（每个文件的大小 + sha256），同一份内容也会作为 `payload-<build>.json` 一起发布——给增量更新用，每次打包还会写出 `build/reports/report-<build>.md`：全量体积、目录分布，以及相对上一版的差集。例如 0.2.4 → 0.2.5 是 **85.0 MB / 670.9 MB（12.7%）**，其中 78.8 MB 是新素材。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §15。
+每份 payload 都带一份**清单** `payload.json`（每个文件的大小 + sha256），同一份内容也会作为 `payload-<build>.json` 一起发布——给增量更新用，每次打包还会写出 `build/reports/report-<build>.md`：全量体积、目录分布，以及相对上一版的差集。0.2.4 → 0.2.5 的实测：**85.1 MB / 670.9 MB（12.7%）**，其中 78.8 MB 是新素材。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §15。
 
 ## 应用内增量更新（Android）
 
-有增量包时，手机上的更新提示变成「**增量下载 74.7 MB（全量 455.1 MB）**」，点一下就在**应用内**完成：只下载变化的 1824 个文件，落到可写层（`filesDir/overlay/<build>/`）后自动重载——不用系统安装器、不重装、存档天然不受影响。
+有增量包时，手机上的更新提示变成「**增量下载 74.7 MB（全量 529.1 MB）**」，点一下就在**应用内**完成：只下载变化的 1826 个文件，落到可写层（`filesDir/overlay/<build>/`）后自动重载——不用系统安装器、不重装、存档天然不受影响。
 
-任何一条不满足就退回完整安装包：客户端不在基准版本上、增量包校验失败、这一版删过文件、包比安装包还大。桌面端不变（仍是"打开下载页"）。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §16。
+任何一条不满足就退回完整安装包：客户端不在基准版本上、增量包校验失败、这一版删过文件、包比安装包还大。桌面端不变（仍是"打开下载页"）。
+
+**当前状态**：第一个带 overlay 的已发布版本是 **build 6（0.2.5）**，它的 picker 还不解析 feed 的 `delta` 字段，所以 build 6 的客户端看不到增量包、必须装完整包；**第一次真正走增量要等 build 7**。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §16。
 
 ## 许可
 

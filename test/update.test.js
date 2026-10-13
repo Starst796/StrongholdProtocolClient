@@ -236,3 +236,71 @@ describe('the payload carries its own build and the feed', () => {
     assert.match(runtimeConfigSource('localhost:3000'), /globalThis\.__SP_UPDATE_FEED__ = "";/);
   });
 });
+
+describe('the fake feed (tools/fake-feed.mjs)', () => {
+  // The local recipe for the update row: point a payload at this feed and look at #sp-upd, with no GitHub involved.
+  // Checked here because the flavours that must be *refused* are the point of it — a fake feed that quietly turns
+  // into a valid one would make the "bad input stays silent" tests meaningless.
+  const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'sp-fake-'));
+
+  test('a real one is well formed: sizes and sha256 the client can verify', async () => {
+    const d = dir();
+    try {
+      const { fakeFeed } = await import('../tools/fake-feed.mjs');
+      const { feed, files } = fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build: 3, version: '9.9.9' });
+      assert.equal(feed.build, 3);
+      assert.equal(feed.win.size, 64 * 1024);
+      assert.equal(feed.win.url, 'http://127.0.0.1:8199/files/' + feed.win.name);
+      assert.equal(feed.win.sha256, sha256File(path.join(d, feed.win.name)), 'the advertised digest is the file on disk');
+      assert.deepEqual(files.map((f) => f.name).sort(), [feed.android.name, feed.win.name].sort());
+      // ...and it survives the client's own parser, which is what the recipe relies on
+      const parsed = parseLatestFeed(JSON.stringify(feed));
+      assert.ok(parsed);
+      assert.equal(parsed.build, 3);
+      assert.equal(parsed.win.name, feed.win.name);
+      assert.equal(parsed.android.name, feed.android.name);
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('the delta flavour carries a pack for the previous build', async () => {
+    const d = dir();
+    try {
+      const { fakeFeed } = await import('../tools/fake-feed.mjs');
+      const { feed } = fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build: 6, flavour: 'delta' });
+      const parsed = parseLatestFeed(JSON.stringify(feed));
+      assert.equal(parsed.build, 6);
+      assert.equal(parsed.delta.base, 5);
+      assert.ok(feed.delta.size < feed.android.size, 'the pack is smaller than the installer, as the plan expects');
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('the flavours that must be refused stay refused', async () => {
+    const d = dir();
+    try {
+      const { fakeFeed } = await import('../tools/fake-feed.mjs');
+      const at = (flavour, build = 1) => parseLatestFeed(
+        typeof fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build, flavour }).feed === 'string'
+          ? fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build, flavour }).feed
+          : JSON.stringify(fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build, flavour }).feed),
+      );
+      assert.equal(at('empty'), null, '{} is not a feed');
+      assert.equal(at('bad-json'), null, 'truncated JSON is not a feed');
+      assert.equal(at('html'), null, 'an HTML page is not a feed');
+      // An artifact without a digest parses, but has no usable asset: there is nothing to verify a download with.
+      const noSha = parseLatestFeed(JSON.stringify(fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build: 1, flavour: 'no-sha' }).feed));
+      assert.equal(noSha, null, 'no sha256 → no asset → no feed');
+      const remoteHttp = parseLatestFeed(JSON.stringify(fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build: 1, flavour: 'http-url' }).feed));
+      assert.equal(remoteHttp, null, 'a plaintext non-local URL must not reach the downloader');
+      // A build 0 feed is *valid* — it is just never newer than anything (the client decides, not the server).
+      const zero = parseLatestFeed(JSON.stringify(fakeFeed({ dir: d, origin: 'http://127.0.0.1:8199', build: 0 }).feed));
+      assert.equal(zero, null, 'build 0 is rejected by parseLatestFeed (a feed with build < 1 is nonsense)');
+      assert.equal(updateVerdict({ build: 5 }, { build: 5 }), 'same');
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+});

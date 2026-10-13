@@ -259,9 +259,14 @@ function feedAsset(raw) {
  * Read the published feed. Anything unexpected — a captive-portal HTML page, a truncated download, a schema from the
  * future, a feed with no usable artifacts — reads as null: "no update information", never a crash and never a bogus
  * "new version" prompt.
+ *
+ * `payload` and `delta` are optional (a release without an incremental pack simply has no `delta`); they are parsed
+ * here rather than read from the raw JSON later, so a feed that reaches the picker has been through the same
+ * validation as the installers.
  * @param {unknown} raw parsed JSON (or the response text)
  * @returns {{version: string, build: number, versionCode: number|null, commit: string, notes: string,
- *            publishedAt: string, win: object|null, android: object|null}|null}
+ *            publishedAt: string, win: object|null, android: object|null, payload: object|null,
+ *            delta: object|null}|null}
  */
 export function parseLatestFeed(raw) {
   let data = raw;
@@ -287,8 +292,22 @@ export function parseLatestFeed(raw) {
     publishedAt: feedText(data.publishedAt) ?? '',
     win: feedAsset(data.win),
     android: feedAsset(data.android),
+    payload: feedSideFile(data.payload, ['files', 'bytes', 'schema', 'base']),
+    delta: feedSideFile(data.delta, ['base', 'files', 'bytes']),
   };
   return feed.win || feed.android ? feed : null;
+}
+
+/** An optional side file of a feed (`payload` = the 清单, `delta` = the incremental pack), or null. */
+function feedSideFile(raw, numbers) {
+  const asset = feedAsset(raw);
+  if (!asset) return null;
+  const extra = {};
+  for (const key of numbers) {
+    const value = Number(raw?.[key]);
+    extra[key] = Number.isFinite(value) ? value : null;
+  }
+  return { ...asset, ...extra };
 }
 
 /**

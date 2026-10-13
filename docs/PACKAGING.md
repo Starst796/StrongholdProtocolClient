@@ -3,7 +3,7 @@
 把浏览器客户端和本机素材打进**桌面 / Android 可执行文件**：素材和代码从本地读取，房间、回合、联机仍然连服务器——默认 **`localhost:3000`**（自己在本机 / 局域网跑游戏服务器；官方远程服已下线）。
 
 ```
-npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB）
+npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，0.2.5：992.8 MB）
 npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
 ```
@@ -61,19 +61,21 @@ node tools/package-client.mjs --game D:\gits\Stronghold-Protocol --out D:\client
 
 ```
 build/desktop/win-unpacked/     ← 分发这个目录
-  StrongholdProtocol.exe        234 MB   ← Electron 本体（改名 + 图标 + 版本信息）
-  resources/www/                265 MB   ← 游戏 payload（素材与代码，见 §1）
+  StrongholdProtocol.exe        234.3 MB ← Electron 本体（改名 + 图标 + 版本信息）
+  resources/www/                670.9 MB ← 游戏 payload（素材与代码，见 §1）
   locales/                      ~2 MB    ← 只留 zh-CN / en-US（默认 55 个语言包约 48 MB）
   *.dll, *.pak, *.bin           ~80 MB   ← Chromium / V8 运行时（一个都不能少）
 ```
 
-| 形态 | 体积 | 启动到首屏 | 说明 |
-|---|---|---|---|
-| **目录版（`npm run client:desktop`）** | 585 MB | **约 0.3 s** | 双击 `win-unpacked/StrongholdProtocol.exe` |
-| 目录版打成 zip 分发 | 321 MB | 解压一次后同上 | 资源管理器右键"压缩到 zip"即可（本机实测：585 MB → 321 MB，28 s） |
-| 单文件 `--portable` | 261 MB | **约 24 s** | 每次启动都把整包解压到 `%TEMP%`（本机实测解压 389 MB 时已用 14 s） |
+以 0.2.5 实测（`build/reports/report-6.md` 同期的产物）：
 
-分发就用**目录版 + 手动 zip**：下载 321 MB，解压一次，之后每次启动都是 0.3 s。单文件只小 60 MB，却要每次启动等你 24 s，所以它退成了 `--portable` 选项（`desktop/` 里也有 `npm run pack:portable`）。
+| 形态 | 体积 | 启动到可用 | 说明 |
+|---|---|---|---|
+| **目录版（`npm run client:desktop`）** | 992.8 MB | **约 1.4 s** | 双击 `win-unpacked/StrongholdProtocol.exe` |
+| 目录版打成 zip 分发 | 638.9 MB | 解压一次后同上 | `npm run release` 会自动压好（deflate） |
+| 单文件 `--portable` | 548.4 MB | **约 60 s** | 每次启动都把整包解压到 `%TEMP%`；单文件用 7z/LZMA，所以比 zip 还小 |
+
+分发就用**目录版 + zip**：下载 639 MB，解压一次，之后每次启动都是 1.4 s。单文件虽然更小，却要每次启动等一分钟，所以它是 `--portable` 选项（`desktop/` 里也有 `npm run pack:portable`）。
 
 > 让 zip 更小：装了 [7-Zip](https://www.7-zip.org/) 的话用 `7z a -mx=9 dist.7z build/desktop/win-unpacked`，LZMA2 通常比 zip 再小 10~15%，但要收件人装 7-Zip 才能解。
 
@@ -116,7 +118,7 @@ C:\Users\<你>\AppData\Roaming\StrongholdProtocol\client.log
 
 玩家反馈"客户端突然消失"时，让他把这个文件发过来。
 
-壳对下面这些情况**不再退出**（以前任何一条都会让整个应用消失，看起来就是"闪退"）：
+壳对下面这些情况**不退出**（任其发生的话整个应用会消失，看起来就是"闪退"）：
 
 | 情况 | 现在的行为 |
 |---|---|
@@ -133,8 +135,8 @@ C:\Users\<你>\AppData\Roaming\StrongholdProtocol\client.log
 
 | | 端口 | 源 | 重启后 |
 |---|---|---|---|
-| 以前 | `0`（系统每次随机分配） | `http://127.0.0.1:53471` → 下次 `http://127.0.0.1:58203` | 换了源 → 读回空值，看起来像"重装了一遍"：要重新登录、干员调配和设置都没了 |
-| 现在 | `DEFAULT_PORT` = 47821（固定） | 每次都是 `http://127.0.0.1:47821` | 同一个源 → `localStorage` 原样读回 |
+| 端口随机（`0`） | `http://127.0.0.1:53471` → 下次 `http://127.0.0.1:58203` | 换了源 → 读回空值，看起来像"重装了一遍"：要重新登录、干员调配和设置都没了 |
+| 现在：`DEFAULT_PORT` = 47821（固定） | 每次都是 `http://127.0.0.1:47821` | 同一个源 → `localStorage` 原样读回 |
 
 47821 被占用时按 `47821, 47822, …` **固定顺序**往后找（`serve.mjs` 的 `PORT_SEARCH`），顺序固定意味着下一次启动仍落在同一个端口，源依旧不变；只有这一小段端口全被占满才会退回随机端口（`client.log` 会有 `loopback port … is in use` 提示）。
 
@@ -198,7 +200,7 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 
 ### 签名：一把 key，全机器一致（`client.config.json` 的 `android.signerSha256`）
 
-**为什么有这一节**：Android 只允许"新包与已装应用**同一个证书** + versionCode 不降"的覆盖安装。而 Android Studio / AGP 会在**每台机器上各自生成一份** debug keystore（`~/.android/debug.keystore`），所以换台机器打出来的包签名不同——玩家会看到「签名不一致」，**只能卸载重装，存档（localStorage）随之丢失**。0.2.1 就是这么发的（0.2.0 与更早的包都在最初那台机器上打的，所以一直没暴露）。
+**为什么有这一节**：Android 只允许"新包与已装应用**同一个证书** + versionCode 不降"的覆盖安装。而 Android Studio / AGP 会在**每台机器上各自生成一份** debug keystore（`~/.android/debug.keystore`），换台机器打出来的包签名就不同——玩家会看到「签名不一致」，**只能卸载重装，存档（localStorage）随之丢失**。所以本仓库把"用哪把 key"钉死在配置里，而不是交给机器环境决定。
 
 规则：
 
@@ -220,7 +222,9 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 $env:SP_KEYSTORE="$env:TEMP\wrong.jks"; .\gradlew.bat assembleDebug
 ```
 
-**代价与后续**：目前发的仍是 `debuggable=true` 的 debug 包。好处是**保住了已装玩家的存档**（从最初那台机器装的 0.1.x / 0.2.0 直接覆盖升级）；代价是包可被调试。将来若换成正式 release key，**所有人**都要卸载一次——那时再决定（届时可先做存档导出/导入）。除了 0.2.1（在另一台机器上打的，那批人已经/需要卸载一次），其它版本不受影响。
+**代价与后续**：目前发的仍是 `debuggable=true` 的 debug 包。好处是**保住了已装玩家的存档**（从最初那台机器上装的版本可以直接覆盖升级）；代价是包可被调试。将来若换成正式 release key，**所有人**都要卸载一次——那时再决定（届时可先做存档导出/导入）。
+
+> 已发布的 `v0.2.1-b2` 是另一台机器打的（那把 key 与项目不同），装过它的设备需要卸载一次；其它已发布版本都用项目这把 key，互相之间可以覆盖安装。
 
 需要单独出未 debug 的 release 包时（**必须用同一把 key**，否则一样装不上）：
 
@@ -437,7 +441,7 @@ package.bat --feed http://127.0.0.1:8199/latest.json   # 换一个更新 feed（
 
 ### 14.1 客户端凭什么知道自己旧了：构建号
 
-上游长时间停在同一个 `APP_VERSION`（0.1.3 走过 bce1827、6471511、…；0.2.0 同理），所以版本号本身分不出两次打包。本仓库因此**自带一个只增不减的构建号**：
+上游经常长时间停在同一个 `APP_VERSION`（0.1.3 与 0.2.0 都各自打过多次），所以版本号本身分不出两次打包。本仓库因此**自带一个只增不减的构建号**：
 
 | 位置 | 内容 | 谁写 |
 |---|---|---|
@@ -477,9 +481,9 @@ node tools/publish-release.mjs --dry-run  # 先看要传什么
 - **上传顺序是"附件在前、`latest.json` 最后"**：feed 一旦可见，它指向的两个包必须已经在了。反过来的话，客户端会先看到"有新版本"，点下载却是 404。
 - 每个附件默认最多试 **3 次**（`--attempts n` 可调）。几百 MB 的上传在家庭网络下被打断是常态，重试是唯一可行的办法（GitHub 的 release 附件**不支持断点续传**，每次重试都是重头传）。中断会打印原因，4xx（token 不对、名字被占）不重试，直接报错。
 - **失败后重复执行本命令是安全的**：release 已存在会复用，同名附件会先删后传，不会产生重复。
-- 上传走 `curl -T`（流式，不把 483 MB 读进内存）并显式禁用 `Expect: 100-continue`；传输"卡住"（低于 10 KB/s 持续 2 分钟）会主动中断转入重试，而不是干等一小时。
+- 上传走 `curl -T`（流式，不把几百 MB 读进内存）并显式禁用 `Expect: 100-continue`；传输"卡住"（低于 10 KB/s 持续 2 分钟）会主动中断转入重试，而不是干等一小时。
 - **代理**：curl 本来就读 `https_proxy` / `HTTPS_PROXY` / `all_proxy`，但**变量只有那个 shell 启动的 node 才继承得到**——在别的窗口设的 `$env:HTTPS_PROXY` 不会生效（而且 GitHub 全是 HTTPS，**只设大写 `HTTP_PROXY` 是没用的**，curl 对大写的 `http_proxy` 明确忽略）。所以本工具提供两条明路：
-  - `node tools/publish-release.mjs --check`：发一个极小请求，直接告诉你**curl 实际走了哪条路**（直连 / 环境变量 xxx / `-x`）以及 HTTP 状态。传 483 MB 之前先跑这个。
+  - `node tools/publish-release.mjs --check`：发一个极小请求，直接告诉你**curl 实际走了哪条路**（直连 / 环境变量 xxx / `-x`）以及 HTTP 状态。传几百 MB 之前先跑这个。
   - `node tools/publish-release.mjs --proxy http://127.0.0.1:7892`：把代理**显式**交给 `curl -x`（覆盖环境变量），不再有"变量到底有没有传进去"的疑问。
   - 每次发布会打印一行 `代理 = …（来源）`；设了 `NO_PROXY` 也会提醒（它若含 github.com，代理会被绕过）。
 - 上传后各自核对大小；`--api` / `--uploads` 可指向别的地址（GitHub Enterprise，或本地假 API 做测试）。
@@ -488,7 +492,7 @@ node tools/publish-release.mjs --dry-run  # 先看要传什么
 
 ### 14.4 客户端看到什么、点了做什么
 
-主页（选择模式）底部出现一行「有新版本 · 0.2.0 · build 13 · 64715116 · 下载 217.2 MB」，两个按钮：
+主页（选择模式）底部出现一行「有新版本 · 0.2.5 · build 6 · cf7a9400 · 增量下载 74.7 MB（全量 529.1 MB）」，两个按钮：
 
 | 平台 | 「下载并安装 / 打开下载页」 | 说明 |
 |---|---|---|
@@ -505,15 +509,17 @@ node tools/publish-release.mjs --dry-run  # 先看要传什么
 ### 14.5 本地怎么验证（不碰真发布）
 
 ```bash
-# 1) 起一个假 feed（自带 sha256 正确的小体积假安装包）
-node <本会话>/update-check/feed-server.mjs --port 8199 --build 1
+# 1) 起一个假 feed（自带 sha256 正确的小体积假产物；--delta 会带上清单与增量包）
+node tools/fake-feed.mjs --port 8199 --build 1
 # 2) 用这个 feed 打一份 payload
 node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json
 # 3) 起壳并挂 CDP，检查提示行 / 忽略 / 重载后仍忽略 / 打开下载页
 desktop\node_modules\electron\dist\electron.exe . --remote-debugging-port=9222
 ```
 
-`--build 0` 的 feed 必须被拒绝（比本机旧），`--empty` 的 feed 必须静默——这两条也在 `test/update.test.js` 里。
+`tools/fake-feed.mjs` 还能造出各种**必须被拒绝**的 feed：`--build 0`（比本机旧）、`--empty`（`{}`）、
+`--bad-json`、`--html`（门户页）、`--no-sha`（没有校验串）、`--http-url`（明文非本机地址）。
+客户端对它们的正确处理是**静默**：不弹错、不引导下载。这些也在 `test/update.test.js` 里钉住。
 
 ## 15. payload 清单与体积报告（`tools/payload-inventory.mjs`）
 
@@ -591,6 +597,7 @@ filesDir/overlay/<build>/payload.json   合并后的清单（APK 的清单 + 本
 | 增量包比 APK 还大 | 走完整安装包 |
 | 这一版**删除**了 payload 文件 | 打包时就不出增量包（overlay 无法从 APK 里"删"文件），客户端走全量 |
 | 这一版改了 **Java/壳代码** | 增量包只能替换 payload 文件，改不了原生代码。用 `node tools/package-release.mjs --no-delta` 明确不发增量包，让客户端走完整安装（否则拿到增量的客户端会"新文件 + 旧原生代码"） |
+| 客户端是已发布的 **build 6** | 它是第一个带 overlay 的版本，但那一版的 picker 还没解析 feed 的 `delta` 字段，所以看不到增量包，只能装完整包。**第一次真正走增量要等 build 7**（build 7 的 picker 会解析，且 build 7 起的客户端都带 overlay） |
 | 下载 sha256 不符 / 解包时任一文件校验失败 / 包不完整 | 报错并**保持原样**（解包在 `<build>.staging` 里，只有全部通过才 rename 生效） |
 
 ### 16.3 发布与验证

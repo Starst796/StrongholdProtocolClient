@@ -1,36 +1,40 @@
-# 端侧打包经验（Windows exe / Android apk）——给后续 agent
+# 端侧打包参考（Windows exe / Android apk）
 
-给接手"打客户端包"这件事的 agent。**先读 [`docs/PACKAGING.md`](docs/PACKAGING.md)**（那是给用户的说明书，
-命令、参数、目录、排错都在里面）；这份文档只写**踩过的坑、验证配方和判断依据**，也就是"照着做会踩什么"。
+给接手"打客户端包"的 agent。**先读 [`docs/PACKAGING.md`](docs/PACKAGING.md)**（那是给用户的说明书，
+命令、参数、目录、排错都在里面）；这份文档写的是**做判断需要的依据**：每条规则的现象、原因和正确的处理方式。
 本文件不涉及服务器发版（那个在 [`docs/DEPLOY-SERVER.md`](docs/DEPLOY-SERVER.md) 与 `deploy/`）。
 
 ---
 
 ## 0. 速览
 
-| 命令 | 产物 | 体积 | 备注 |
+| 命令 | 产物 | 体积（0.2.5 / build 6） | 备注 |
 |---|---|---|---|
-| `npm run client:build` | `build/client/www` | 498.1 MB / 8816 文件（0.2.0） | 只是摊平的 payload，用来自托管/调试 |
-| `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | ~818 MB，exe 本身 234.3 MB | **默认形态**，双击到首屏 ~0.3 s |
-| `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | ~253 MB | 单文件，首屏 **~24 s**（每次启动都把整个应用解到 `%TEMP%`） |
-| `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | ~228 MB | debug 包；`--release` 出未签名的 release |
-| `npm test` | —— | 202 用例 | `packaging/picker/update/signing/publish/inventory/status/host`；没有游戏 checkout 时自动 skip |
+| `npm run client:build` | `build/client/www` | 670.9 MB / 13525 文件 | 摊平的 payload，用来自托管/调试（含清单 `payload.json`） |
+| `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | 992.8 MB（exe 本身 234.3 MB） | **默认形态**，启动到可用 ~1.4 s |
+| `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | 548.4 MB | 单文件，启动到可用 **~60 s**（每次启动都把整个应用解到 `%TEMP%`） |
+| `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | 529.1 MB | debug 包；`--release` 出未签名的 release |
+| `npm run release` | `build/dist/`：桌面 zip + apk + `payload-<build>.json` + `delta-<base>-<build>.zip` + `latest.json` | zip 638.9 MB | 一键发布驱动，见 §5 |
+| `npm test` | —— | 229 用例 | `packaging/picker/update/signing/publish/inventory/delta/overlay/status/host`；没有游戏 checkout 时自动 skip |
 
 默认连 `localhost:3000`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
 **本打包仓库**（`Stronghold-Protocol-Client`）／**服务器启动器**（`Stronghold-Protocol-Server-Launcher`，另一件事）。
 
 **打包前必须有的两样本机素材**（都在游戏仓库、都**不进版本库**，缺了就打不出能看的客户端）：
-`public/assets/**`（约 462 MB，`tools/fetch-assets.mjs` / `npm run assets`）与 **`data/assets.json`**（素材清单，
+`public/assets/**`（约 633 MB，`tools/fetch-assets.mjs` / `npm run assets`）与 **`data/assets.json`**（素材清单，
 客户端没有它就会**一张图都不显示**）。`npm run client:desktop` / `client:android` 会在缺失时**直接报错中止**
 （`assertArtComplete`）。
 
-前置：Node 22+；一个已经 `npm install` + `npm run assets` 的**游戏仓库 checkout**（素材约 265 MB，不在 GitHub 里）；
+前置：Node 22+；一个已经 `npm install` + `npm run assets` 的**游戏仓库 checkout**；
 打 apk 另需 JDK 17+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。
-本机可用：JDK 21 在 `C:\Program Files\Java\jdk-21`，SDK 在 `%LOCALAPPDATA%\Android\Sdk`，
-游戏仓库自带 Node 在 `d:\gits\Stronghold-Protocol\.tools\node\node.exe`，
-无头浏览器用 Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`。
 
-想在**不动用户工作区**的前提下验证（比如本机 checkout 已经领先到打包器还不支持的上游版本），用
+本机环境（这台开发机）：JDK 21 在 `C:\Program Files\Java\jdk-21`，SDK 在 `%LOCALAPPDATA%\Android\Sdk`，
+项目签名 keystore 在 `D:\gits\stronghold-signing\`（`SP_KEYSTORE` 指过去即可），
+游戏仓库自带 Node 在 `d:\gits\Stronghold-Protocol\.tools\node\node.exe`，
+无头浏览器用 Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`，
+访问 GitHub 需要代理 `http://127.0.0.1:7892`（`tools/publish-release.mjs --proxy`）。
+
+要在**不动用户工作区**的前提下验证（比如本机 checkout 已经领先到打包器还不支持的上游版本），用
 `git worktree add d:\gits\sp-<sha> <sha>` 拿一份旧提交，再把 `public/assets`、`public/fonts` 从主 checkout
 **robocopy 过去**（junction 不会被 `readdirSync` 跟随，会静默少素材），最后 `--game d:\gits\sp-<sha>` 打包。
 
@@ -40,7 +44,7 @@
 
 `tools/package-client.mjs` 把游戏仓库的挂载点**摊平**成 `build/client/www`（`/`→`public/`，`/data/`→`data/`，
 `/shared/`→`shared/`，`/sim/`→`server/sim/*.js` 去掉 Node 专用 loader，`/packs/`→`packs/`），并生成 `data.js`（浏览器版
-`server/data.js` 替身）、`server/**`（页内服务器用的引擎，见 §5）、`packs/index.json`（0.2.0 内容包索引，
+`server/data.js` 替身）、`server/**`（页内服务器用的引擎，见 §5）、`packs/index.json`（内容包索引，
 用游戏自己的 `tools/packs.mjs index` 生成）、`js/runtime-config.js`（连哪个服务器 + 更新 feed）、`js/shell/*`、
 `css/shell-display.css`、`build.json`。exe 把它塞进 `resources/www`，apk 把它塞进 `assets/public/`。
 
@@ -48,7 +52,7 @@
 网页端刷新就有，端侧必须重打。给玩家的说明和你的发布节奏都要考虑这一点。
 
 `build.json` 是溯源用的：`server` / `game.app`（客户端界面显示的版本）/ `game.commit` / `game.dirty`。
-`game.describe` 走 `git describe --tags`，而开发机只有旧 tag、又常常连不上 github.com，所以它常常显示
+`game.describe` 走 `git describe --tags`，开发机常常只有旧 tag（也不一定能连上 github.com），所以它可能是
 `v0.1.0-184-gxxxx` 这种"看起来版本不对"的值——**它只进日志和 build.json，界面显示的是 `app`**，别被它带跑偏。
 
 ## 2. 改动游戏端要给上游留面子：补丁不进游戏仓库
@@ -69,34 +73,33 @@ cd d:/gits/Stronghold-Protocol && git diff --stat upstream/master..master
 **契约文件**（0.2.0 起是 `server/http/static.js`，常量 `CONTRACT_FILE`）一致——**游戏端改了挂载点或 sim 的私有文件，
 这里会红**，这是设计好的报警，不要改断言绕过。
 
-**上游修好了就删 hook**：`js/screens/lobby.js` 那个"补上 ERR import"的 hook 在 0.2.0 已经删掉（上游自己导入了）。
-留着它只会让 `regen-patch` 抛 `anchor not found`——hook 是"上游还没做、我们等不及"的临时措施，不是资产。
+**上游修好了就删 hook**：hook 是"上游还没做、我们等不及"的临时措施，不是长期资产；上游自己实现之后必须删掉，
+否则 `regen-patch` 会抛 `anchor not found`（`js/screens/lobby.js` 的 ERR-import hook 已按此删除——上游自己导入了）。
 
 ## 3. 桌面端（exe）：几个必须记住的判断
 
-**目录版 vs 单文件**：单文件版每次启动都把整个应用解压到 `%TEMP%`，实测首屏 **24.4 s**，目录版 **0.28 s**。
-所以默认出目录版（`win.target: ['dir']`），`--portable` 才出单文件。分发时自己压成 zip
-（LZMA/默认算法 321 MB / 28 s；**别用 deflate**，比 LZMA 差很多）。
+**目录版 vs 单文件**：单文件版每次启动都把整个应用解压到 `%TEMP%`，实测（0.2.5）启动到可用 **60 s**，
+目录版 **1.4 s**。所以默认出目录版（`win.target: ['dir']`），`--portable` 才出单文件。
+分发用 `npm run release` 自动压好的 zip（deflate；单文件的 548.4 MB 是 7z/LZMA 压出来的，比 zip 小）。
 
-**瘦身**：`electronLanguages: ['zh-CN','en-US']` 把 `locales/` 从 55 个文件砍到 2 个，省 ~48 MB（632 → 585 MB）。
-再想瘦就得动 265 MB 的素材，那是另一个话题。
+**瘦身**：`electronLanguages: ['zh-CN','en-US']` 把 `locales/` 从 55 个文件砍到 2 个，省约 46 MB。
+再想瘦就得动 670 MB 的素材，那是另一个话题。
 
 **一次调用一个 target**：electron-builder 的 CLI 一次只接受一个 target（`--win dir` 或 `--win portable`），
 所以别指望一条命令同时出两种形态；`desktop/package.json` 的 `pack` / `pack:portable` 两个 script 就是干这个的。
 
 **固定端口 47821（最容易白干活的坑）**：壳把 payload 挂在 `http://127.0.0.1:<port>`，而 `localStorage`
-按**源**隔离——游戏把续连 token、干员调配、设置都存在里面。以前用端口 `0`（系统随机分配），
-结果每次启动都是新源：**看起来像"重装了一遍"**（要重新登录、调配和设置清空）。
-现在 `desktop/serve.mjs` 固定 `DEFAULT_PORT = 47821`，被占用时按 `47821, 47822, …` **固定顺序**往后找
-（顺序固定 → 下次启动仍落回同一个源）。改这里之前先想清楚源会不会变。Android 不用管：Capacitor 固定
-从 `https://localhost` 提供页面，源本来就稳定。
+按**源**隔离——游戏把续连 token、干员调配、设置都存在里面。端口一旦变化，每次启动都是新源，
+**看起来像"重装了一遍"**（要重新登录、调配和设置清空）。所以 `desktop/serve.mjs` 固定
+`DEFAULT_PORT = 47821`，被占用时按 `47821, 47822, …` **固定顺序**往后找（顺序固定 → 下次启动仍落回同一个源）。
+改这里之前先想清楚源会不会变。Android 不用管：Capacitor 固定从 `https://localhost` 提供页面，源本来就稳定。
 
 **崩溃/闪退的诊断**：`desktop/main.mjs` 里 `render-process-gone` 是**重载而不是退出**，日志写到
 `%APPDATA%\StrongholdProtocol\client.log`（1 MB 轮转）。排查顺序：
 1. 看 `client.log` 有没有 `renderer gone: reason=…`；
 2. 有没有**残留进程**——单实例锁会让新进程立刻退出，**看起来就像"闪退"**（单文件版尤其容易残留）：
    `Get-Process -Name StrongholdProtocol`；
-3. 用 CDP 主动崩一次验证恢复：`Page.crash` → 应用应存活并回到大厅（历史上 6/6 通过）。
+3. 用 CDP 主动崩一次验证恢复：`Page.crash` → 应用应存活并回到大厅。
 
 ## 4. Android（apk）：两个独立问题，别混在一起
 
@@ -124,11 +127,12 @@ cd d:/gits/Stronghold-Protocol && git diff --stat upstream/master..master
 `assets/capacitor.config.json` 是生成物、已 gitignore；`android/` 项目本体（manifest、MainActivity、
 styles.xml、gradle）是**手写并入库的**，改完记得提交，否则下一个人重打又丢。
 
-**宿主机上打不出"能直连局域网服务器"的包**只能靠上面两条；`androidScheme: https` 别乱动（见 §3 的源问题）。
+**宿主机上打出的包能不能直连局域网服务器**只取决于上面两条（`usesCleartextTraffic` + `allowMixedContent`）；
+`androidScheme: https` 别乱动（源一变化，存档就丢，见 §3）。
 
-## 5. 验证配方（给 agent 的"怎么证明它是对的"）
+## 5. 验证配方（"怎么证明它是对的"）
 
-打包这件事**不看日志猜、要拿产物本身验**。以下几条都是实际用过的：
+打包这件事**不看日志猜、要拿产物本身验**：
 
 ```powershell
 # 1) payload 与产物是否一致（哈希比对，确认新文件真的进了包）
@@ -158,48 +162,47 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 `CHROME_PATH=<Edge 路径>` 跑 `node --test test/ui/*.e2e.test.js`。没有这两个环境变量时它们**静默 skip**，
 很容易误以为"通过"。
 
-## 6. 陷阱清单（都是实际踩过的）
+## 6. 陷阱清单
 
 | 现象 | 原因 / 处理 |
 |---|---|
 | 桌面端"闪退"、日志正常 | 多半是**残留进程**撞单实例锁；先 `Get-Process -Name StrongholdProtocol` 清干净 |
 | 重启后要重新登录 / 调配没了 | 端口变了 → 换了源（§3 固定 47821） |
-| 单文件 exe 首屏 24 s | 正常：每次解压到 `%TEMP%`；改用目录版 |
+| 单文件 exe 启动要一分钟 | 正常：每次解压到 `%TEMP%`；分发改用目录版（§0 的体积/启动对照表） |
 | CDP 连上 Electron 后窗口变成 800×600 | `puppeteer.connect()` 默认强制视口：传 `defaultViewport: null` |
 | `browser.close()` 之后应用没了 | 那是**退出 Electron**；用 `disconnect()` |
 | `waitForFunction` 永远不返回 | 后台标签页节流 rAF：`polling: 100`，或先 `bringToFront()` |
-| CDP 注入的按键触发不了 `before-input-event` | 自动化按键到不了 Electron 那层；要测就得真按键（历史上 F2 用真按键测的） |
+| CDP 注入的按键触发不了 `before-input-event` | 自动化按键到不了 Electron 那层；要测就得真按键（F2 那类快捷键） |
 | PowerShell 里 `&&`、heredoc 不可用 | 用 `;` + `if ($?)`；多行脚本写文件或用 `node -e`；提交信息写文件再 `git commit -F` |
-| 版本号改了产物名却没变 / 反之 | 版本要从**游戏仓库** `shared/constants.js` 读；本仓库 `package.json`+两份 lock 的根与 `packages.""` 也要同步（`1ca6d71`），别碰传递依赖里的 `0.1.0` |
+| 版本号改了产物名却没变 / 反之 | 版本要从**游戏仓库** `shared/constants.js` 读；本仓库 `package.json` + 两份 lock 的根与 `packages.""` 也要同步，别碰传递依赖里的 `0.1.0` |
 | 脚本在 Windows 上好好的，Linux/systemd 上炸 | CRLF：仓库用 `.gitattributes`（`*.sh`/`*.mjs`/`deploy/**` = `eol=lf`）；`git archive` 会按 `core.autocrlf` 输出 CRLF；装到服务器/`/etc/systemd/system` 的副本要 `sed -i 's/\r$//'` |
 | 只有个别尺寸（手机横屏）出问题 | 改 UI 比例前先用 `dev/game-mock.html?phase=<阶段>` 在**多个视口**下量，桌面 1920×1080 必须回归不变 |
-| 服务器填 `IP:端口` 连不上、非得写 `http://` | 曾经不带协议的地址一律"非私网 → wss"，公网 IP 就废了。现在 `toWsUrl()`：**带端口的地址按 `ws://` 猜**（`:443` 除外）、不带端口才按"公网 wss / 本机 ws"；选择页还会对"无协议 + 有端口"的地址**两种协议都探一次**（`picker-core.js` 的 `ambiguousScheme`），命中即记录那个地址。实测 `211.71.60.138:3000` → `ws://…` 一次连上 |
+| 服务器填 `IP:端口` 连不上、非得写 `http://` | `toWsUrl()` 的规则：**带端口的地址按 `ws://` 猜**（`:443` 除外）、不带端口才按"公网 wss / 本机 ws"；选择页还会对"无协议 + 有端口"的地址**两种协议都探一次**（`picker-core.js` 的 `ambiguousScheme`），命中即记录那个地址。所以公网 IP + 端口（如 `211.71.60.138:3000`）能直接填 |
 | 内网穿透（frp / SakuraFrp）连不上 | 先用 `-k` + `Upgrade` 头验隧道：`curl -k -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -o NUL -w '%{http_code}' https://host:port/ws`。实测 SakuraFrp 返回 **101** —— 隧道和 ws 都没问题，唯一障碍是**自签证书**（`CN=SakuraFrp Automatic TLS sn.…`，SAN 还是 `lt.<域名>`）。**客户端现在会自己解决**：两端都做"首次信任"（桌面 `desktop/trust.mjs` + `certificate-error` 弹窗；Android `MainActivity.onReceivedSslError` 弹 AlertDialog），点一次"仍然连接"就记住 主机+指纹（证书换了会再问）。不弹窗的开关只有桌面版有（`--insecure-tls`）。要根治还是让服务端换受信任证书（SakuraFrp 的"自动HTTPS"需自有域名验证）或用明文端口 |
 | 首次信任弹窗的验证 | 桌面：`trusted-certs.json` 有对应 主机→指纹 就直接连（日志里没有任何 certificate 行）；没有就弹窗（日志 `the certificate of <host> is not trusted … asking the player`）。Electron 的指纹格式是 **`sha256/<base64>`**（不是 `AA:BB:` 十六进制），手工预置信任文件时别写错格式 |
 | Android 端 SSL 钩子改不动？ | `SslError.getCertificate()` 返回的是 `android.net.http.SslCertificate`（**不是** `X509Certificate`）：API 29+ 用 `getX509Certificate()`，24–28 用 `SslCertificate.saveState(cert).getByteArray("x509-certificate")` 再 `CertificateFactory`。Capacitor 的 `BridgeWebViewClient` 是 public、`Bridge.setWebViewClient()` 也是 public，所以能"子类只覆盖 `onReceivedSslError`"而不破坏本地 payload |
 | 域名带路径（`host/play/`）连不上 | 选择页把路径原样接到 `/ws` 前（`host/play/` → `wss://host/play/ws`），路径不存在就是 404。注意游戏服务端的 `/ws` **只应答带 `Upgrade` 的请求**：普通 GET 返回 404 是正常的，用 `curl -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="` 才能看到 101 |
-| `Number(null) === 0` | 可选数字别随手 `Number()`：`null` 必须保持"没有"，否则"未设置"会被当成 0（公告的 `until` 就栽过） |
-| 上游 0.2.0 后打包全红：`DATA_SHIM_JS not found` | `server/index.js` 被拆成 `server/http/*`，契约声明搬到了 **`server/http/static.js`**（`CONTRACT_FILE`），MIME 表搬到 `server/http/files.js`（`MIME_FILE`）。改这两个常量即可，别再回去读 `index.js` |
-| 下游能跑但文件多出一堆、守卫报 `node:http` | 0.2.0 的 `server/http/**` 是纯 HTTP 层（`node:http`/`node:zlib`/`node:fs`），payload 不该带：`SERVER_PRIVATE_DIRS = ['http']` + `SERVER_PRIVATE` 里加 `packs.js`（那层由各自的壳替代：Electron `serve.mjs` / Android `MiniHostServer` / Capacitor WebView） |
-| 客户端装上去**一张图都不显示**（能进大厅、能连服务器，但所有素材都是空/占位） | `data/assets.json`（客户端解析素材的清单）没进 payload。它是**本机生成、不进游戏仓库**的（`tools/fetch-assets.mjs` 产出，和 `public/assets/**` 一样）。0.2.1 build 3 就这样发过：打包时该文件恰好不在仓库里，payload 少了它，客户端请求 `/data/assets.json` 得到 404 → 全部素材加载失败，而打包过程**毫无异常**。现在 `assembleClient` 会报 `missingArtManifest`，两个打包壳（desktop/android）用 `assertArtComplete()` **直接中止**。修法：在游戏仓库跑 `npm run assets` 再打包。**排查时先看这一条**（`curl` 一下 payload 的 `/data/assets.json` 是否 200） |
-| 上游 0.2.1 后打包全红：守卫报 `server/update.js imports node:fs` | 0.2.1 新增的更新包 `server/update.js`（先被 `server/http/boot.js` 引用），payload 里是死文件：`SERVER_PRIVATE` 里加 `update.js` 即可。（**注意**：payload 是就地更新的，上一次失败运行留下的 `server/update.js` 要等构建末尾的清理才消失，而守卫在清理**之前**跑——所以第一次修好之后仍会红一次，先删 `build/client/www` 再重打） |
-| 换台机器打的 APK 装不上、提示「签名不一致」 | **每台机器的 ~/.android/debug.keystore 都是各自生成的**（AGP 首次构建时造一份），所以"在另一台机器上打的包"= 另一把钥匙 = 无法覆盖安装，只能卸载重装（存档丢）。0.2.1 就这么发过。现在项目把 key 钉在 `client.config.json` 的 `android.signerSha256`，构建期核对指纹、不符拒绝构建；`package-android` 与 `publish-release` 再各验一次产物。换机器=复制那一份 `debug.keystore`（或 `SP_KEYSTORE` 指过去），**并离线备份** |
-| 想确认"这个包到底是哪把 key 签的" | `apksigner verify --print-certs <apk>`（build-tools 里）；或用会话里的 `apk-signer.mjs`，只取文件尾部 1 MB 就能读出证书（GitHub 的资源 CDN 对 `Range` 返回 501，所以远端包得整包下或换直连） |
+| `Number(null) === 0` | 可选数字别随手 `Number()`：`null` 必须保持"没有"，否则"未设置"会被当成 0（公告的 `until` 就是这种字段） |
+| 报 `DATA_SHIM_JS not found` | 契约声明的位置是 **`server/http/static.js`**（常量 `CONTRACT_FILE`），MIME 表在 `server/http/files.js`（`MIME_FILE`）；`DATA_SHIM_JS` 必须与那里的 shim 一致。改这两个常量即可，不要回去读 `server/index.js` |
+| 下游能跑但文件多出一堆、守卫报 `node:http` | `server/http/**` 是纯 HTTP 层（`node:http`/`node:zlib`/`node:fs`），payload 不该带：`SERVER_PRIVATE_DIRS = ['http']` + `SERVER_PRIVATE` 里加 `packs.js`（那层由各自的壳替代：Electron `serve.mjs` / Android `MiniHostServer` / Capacitor WebView） |
+| 客户端装上去**一张图都不显示**（能进大厅、能连服务器，但所有素材都是空/占位） | `data/assets.json`（客户端解析素材的清单）没进 payload。它和 `public/assets/**` 一样是**本机生成、不进游戏仓库**的（`tools/fetch-assets.mjs` 产出）。缺了它，客户端请求 `/data/assets.json` 得到 404 → 全部素材加载失败，而打包过程**毫无异常**。守门是 `assembleClient` 的 `missingArtManifest` + 两个打包壳的 `assertArtComplete()`（**直接中止**）；修法是在游戏仓库跑 `npm run assets` 再打包。**排查时先看这一条**（`curl` 一下 payload 的 `/data/assets.json` 是否 200） |
+| 守卫报 `server/update.js imports node:fs` | `server/update.js` 被 `server/http/boot.js` 引用，payload 里是死文件：`SERVER_PRIVATE` 里加 `update.js` 即可。（**注意**：payload 是就地更新的，上一次失败运行留下的 `server/update.js` 要等构建末尾的清理才消失，而守卫在清理**之前**跑——所以修好后仍可能红一次，先删 `build/client/www` 再重打） |
+| 换台机器打的 APK 装不上、提示「签名不一致」 | **每台机器的 ~/.android/debug.keystore 都是各自生成的**（AGP 首次构建时造一份），所以"在另一台机器上打的包"= 另一把钥匙 = 无法覆盖安装，只能卸载重装（存档丢）。项目把 key 钉在 `client.config.json` 的 `android.signerSha256`：构建期核对指纹、不符拒绝构建，`package-android` 与 `publish-release` 再各验一次产物。换机器=复制那一份 `debug.keystore`（或 `SP_KEYSTORE` 指过去），**并离线备份** |
+| 想确认"这个包到底是哪把 key 签的" | `apksigner verify --print-certs <apk>`（build-tools 里）；`tools/android-signing.mjs` 在打包与发布前会自动做同一件事（GitHub 的资源 CDN 对 `Range` 返回 501，所以远端包得整包下） |
 | 给 `publish()` 写集成测试时整个测试挂死 | `publish()` **从头到尾是同步的**（`spawnSync` + curl），在同一个进程里跑它会把事件循环占满——而假 API 服务器就在那个循环里，于是 curl 永远等不到响应。假服务器必须在**别的进程**，或者把 `publish()` 放到子进程里跑（`test/publish.test.js` 用后者）。同理：`req.resume()` 必须在挂 `data` 监听**之后**，否则请求体已被 flowing 模式吃掉、`end` 永远不触发 |
 | 用 PowerShell 的 `Get-Content`/`Set-Content` 改含中文的文件 | 默认编码会把 UTF-8 中文写成乱码（`/签名不一�?` 直接让 `node --check` 报正则未闭合）。要么用编辑工具改，要么 `Set-Content -Encoding utf8`；改完**务必** `node --check`。同理，**行内命令里别塞中文**（会被控制台编码破坏，PowerShell 直接解析失败） |
 | 语言切换菜单空 / `/packs/index.json` 404 | 0.2.0 的内容包（`docs/PACKS.md`）：真实服务器用 `server/packs.js` 现算索引，静态托管跑不了。打包时用**游戏自己的工具**生成 `packs/index.json`（`writePackIndex()` 调 `node tools/packs.mjs index --out …`，和上游发布 zip 同一套），并把 `packs/` 挂载一起镜像 |
-| 控制台一串 `/media/bgm/xxx` 404 | **不是 bug**：0.2.0 为了躲下载管理器（IDM/迅雷）把音频地址改成无扩展名的 `/media/…`，那是服务器路由。`public/js/audio.js` 的 `isAudioResponse` 会在 404 / 非 audio 响应时**回退到 `/assets/audio/…` 直链**，所以打包客户端照样有声音。要证明就 fetch 两条：`/media/…`=404、`/assets/audio/…mp3`=200 `audio/mpeg` |
-| 同一版本号打两次，Android 说"未安装/无法更新" | `versionCode` 只从 `APP_VERSION` 推的话永远不变（0.1.3 → 103）。现在带**构建号**：`版本码 ×10000 + build`（`tools/release-meta.mjs`），`release.json` 只增不减 |
-| 覆盖安装后存档（干员调配/设置/续连）没了 | 那是**卸载**造成的，不是覆盖：Android 只要求签名一致 + versionCode 不降。历史上"必须删了重下"多半是安装器点错或空间不足；真换签名（debug → release）的那一次才必须卸载，所以**尽早定下正式签名** |
-| 更新提示不出现 | 先看 feed 是否真的可达（`curl -sSL …/releases/latest/download/latest.json`）：Docker 别名只认**正式发布**，draft/prerelease 不生效；再看 `build.json` 的 `client.build` 是否 ≥ feed 的 `build`；被"忽略此版本"记过就等更新的 build（`localStorage.sp.shell.skipUpdate`） |
-| 想测更新但不想真发布 | 起假 feed（`feed-server.mjs --port 8199`）→ `node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json` → CDP 查 `#sp-upd`。`--build 0` 必须被拒绝、`--empty` 必须静默 |
-| 发布大包时报 `GitHub 返回了非 JSON 响应（HTTP 100）` | curl 的 `Expect: 100-continue`：483 MB 的请求会先问一句，上传中途断掉时那个 `100 Continue` 就成了最后看到的"状态码"。修法是 `-T`（**流式**发文件，别用 `--data-binary @file`——那会先整份读进内存）+ 空 `Expect:` 头。已修，并有单测钉住参数 |
+| 控制台一串 `/media/bgm/xxx` 404 | **不是 bug**：游戏端把音频地址写成无扩展名的 `/media/…`（为躲下载管理器 IDM/迅雷），那是服务器路由。`public/js/audio.js` 的 `isAudioResponse` 会在 404 / 非 audio 响应时**回退到 `/assets/audio/…` 直链**，所以打包客户端照样有声音。要证明就 fetch 两条：`/media/…`=404、`/assets/audio/…mp3`=200 `audio/mpeg` |
+| 同一版本号打两次，Android 说"未安装/无法更新" | `versionCode` 只从 `APP_VERSION` 推的话永远不变（0.1.3 → 103）。带**构建号**才满足递增：`版本码 ×10000 + build`（`tools/release-meta.mjs`），`release.json` 只增不减 |
+| 覆盖安装后存档（干员调配/设置/续连）没了 | 那是**卸载**造成的，不是覆盖：Android 只要求签名一致 + versionCode 不降。只有换签名（debug → release）那一次才必须卸载，所以**尽早定下正式签名** |
+| 更新提示不出现 | 先看 feed 是否真的可达（`curl -sSL …/releases/latest/download/latest.json`）：`releases/latest` 别名只认**正式发布**，draft/prerelease 不生效；再看 `build.json` 的 `client.build` 是否 ≥ feed 的 `build`；被"忽略此版本"记过就等更新的 build（`localStorage.sp.shell.skipUpdate`） |
+| 想测更新但不想真发布 | 起假 feed（`node tools/fake-feed.mjs --port 8199 --build 1`，`--delta` 会带上清单与增量包）→ `node tools/package-client.mjs --feed http://127.0.0.1:8199/latest.json` → CDP 查 `#sp-upd`。`--build 0` / `--empty` / `--bad-json` / `--html` / `--no-sha` / `--http-url` 这些 flavour 必须读成"没有更新信息"（静默） |
+| 发布大包时报 `GitHub 返回了非 JSON 响应（HTTP 100）` | curl 的 `Expect: 100-continue`：几百 MB 的请求会先问一句，上传中途断掉时那个 `100 Continue` 就成了最后看到的"状态码"。参数必须是 `-T`（**流式**发文件，别用 `--data-binary @file`——那会先整份读进内存）+ 空 `Expect:` 头；`test/publish.test.js` 钉住这些参数 |
 | 设了 `$env:HTTPS_PROXY` 但代理软件显示 0 流量 | curl **确实**读这个变量（`curl -v` 会打印 `Uses proxy env variable https_proxy == '…'`），但 `$env:X=` 只对**当前这个 shell 及其子进程**有效：换个窗口、或在设之前就把 node 起好了，变量都进不去。另外 GitHub 全是 HTTPS，**只设大写 `HTTP_PROXY` 永远不生效**（curl 对大写的 `http_proxy` 明确忽略，防 httpoxy）。排查/绕过：`node tools/publish-release.mjs --check`（报告 curl 实际走的路线）或 `--proxy http://127.0.0.1:7892`（显式 `-x`）。注意 `NO_PROXY` 若含 github.com 会把代理绕过去 |
-| 以为"能上 GitHub 就不用代理" | 直连能通不代表能传 483 MB：实测直连 `api.github.com` 200，但大文件传到一半会被掐（表现为 `HTTP 100`/`curl: (52)`）。要么走代理，要么接受重试 |
-| 重新发布会卡在第一个附件（`HTTP 204` 被当成错） | `DELETE /releases/assets/<id>` 返回 **204 无正文**，解析器却要求 JSON。空正文必须算成功。已修，`test/publish.test.js` 钉住 |
+| 以为"能上 GitHub 就不用代理" | 直连能通不代表能传几百 MB：直连 `api.github.com` 可能 200，但大文件传到一半会被掐（表现为 `HTTP 100`/`curl: (52)`）。大包一律走 `--proxy`，或接受重试 |
+| 重新发布会卡在第一个附件（`HTTP 204` 被当成错） | `DELETE /releases/assets/<id>` 返回 **204 无正文**，解析器却要求 JSON；空正文必须算成功。`test/publish.test.js` 钉住 |
 | 几百 MB 传一半断了 | GitHub 的 release 附件**不支持断点续传**，只能整份重传：`publish-release.mjs` 默认重试 3 次、4xx 不重试、低于 10 KB/s 持续 2 分钟即中断转重试。**直接重复执行该命令即可**，同名附件先删后传，不会重复 |
 | 想让"有新版本"提示不出现 | 保证 `releases/latest` 指向的那个 release 里的 `latest.json` 的 `build` ≤ 客户端的 `client.build`；或者干脆别发（没 feed 就没提示）。**注意**：别名会被最近一次正式发布抢走，所以别往这个仓库发无关 release |
-| 给 `publish()` 写集成测试时整个测试挂死 | `publish()` **从头到尾是同步的**（`spawnSync` + curl），在同一个进程里跑它会把事件循环占满——而假 API 服务器就在那个循环里，于是 curl 永远等不到响应。假服务器必须在**别的进程**，或者把 `publish()` 放到子进程里跑（`test/publish.test.js` 用后者）。同理：`req.resume()` 必须在挂 `data` 监听**之后**，否则请求体已被 flowing 模式吃掉、`end` 永远不触发 |
 | 清单 `payload.json` 每次重打都被删掉一次（`removed` 多 1） | 它由 `assembleClient` **最后**生成（内容依赖其余所有文件），但 `sweep()` 只保留 `expected` 里的文件。所以要在 `sweep()` **之前**先把 `payload.json` 放进 `expected`，否则每轮都"删了再写" |
 | 手工算清单时报"清单和 payload 不是同一次生成" | `package.json` 的版本号是 `package-release` **开始构建前**才对齐到游戏版本的：直接拿游戏仓库的 `APP_VERSION` 去算当前 payload 的清单，版本字段就对不上（`payload.json` 记的是 `build.json` 里 `client.version`）。手工调用时读 `build/client/www/build.json` 的 `client`，或者干脆不传 inventory（`writeInventoryArtifacts` 会读 payload 里那一份，省一次 670 MB 哈希） |
 | 新 clone 里 `build/inventories/` 是空的，做不了增量基准 | `build/` 不进版本库。从**上一版已发布的桌面 zip** 重建基准：`node tools/payload-inventory.mjs --from-zip build/dist/StrongholdProtocol-0.2.4-win-x64.zip`（payload 在 zip 内 `win-unpacked/resources/www/`，版本/build 号从包内 `build.json` 读），或用 `--base-inventory` 指到别处 |
@@ -209,19 +212,19 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 以为改 `assets` 就能更新 | 应用改不了自己的 APK。增量一律落在 `filesDir/overlay/<build>/`，靠 `RouteProcessor`（WebView）+ `OverlayStaticSource`（局域网开服）叠在 APK 上面；`APK build >= overlay build` 时 overlay 会被丢弃，否则装了新 APK 还会跑到旧代码 |
 | 增量包里有文件删不掉 | overlay 是"层"，删不掉 APK 里的副本。所以**这一版有删除就不出增量包**（`package-release` 里判断 `diff.removed.length`），客户端走全量安装 |
 | 改了 Java 却发了增量包 | 增量包**只替换 payload**，改不了 APK 里的原生代码；只吃增量的客户端会"新前端 + 旧原生"。改过壳/Java 的版本用 `--no-delta` 明确走全量 |
+| feed 里加了字段（`payload` / `delta`）但客户端没反应 | 客户端只认 `parseLatestFeed()` 解析出来的 feed——**新增字段必须在那里解析**（`feedSideFile()`），否则 picker 拿到的对象上根本没有这个键，判断永远走"没有增量" |
+| 首次引入 overlay 的那一版拿不到增量 | 引入 overlay 的 APK 里是**旧 picker**（不解析 `delta`），所以那一次更新必须装完整包；下一版起才真正走增量 |
 
 ## 7. 交付
 
 * **exe**：给 `build/desktop/win-unpacked/` 整个目录，自己压 zip（LZMA）。别只给 exe——它离不开旁边的 dll/locales/resources。
 * **apk**：debug 包用 debug keystore 签过、可直接安装；正式分发才需要自己的签名（见 `docs/PACKAGING.md` §5）。
 * 产物目录（`build/`、`mobile/android/app/build/`、`app/src/main/assets/public/`）都已 gitignore，**不要提交**。
-* 发版后提醒玩家：`public/**` 的新功能要**换成新包**才看得到。
+* 发版后玩家拿到新内容的方式：Android 从 build 7 起可以走应用内增量（§6 的最后一组行），其它情况要换新包。
 
-## 8. 交给后续 agent 的三步验收
+## 8. 验收四步
 
-1. `npm test`（用例含 payload 补丁格式、游戏契约、更新规则）——红了的断言先读懂，别改断言；
+1. `npm test`（用例含 payload 补丁格式、游戏契约、更新与增量规则）——红了的断言先读懂，别改断言；
 2. 重新 `npm run client:desktop` + `npm run client:android`，按 §5 的 1)~5) **验产物**（哈希、启动冒烟、apk 拆包、aapt2）；
-3. `git diff --stat upstream/master..master` 确认游戏仓库没有混进客户端专用代码。
-
-三个仓库的分工与提交历史（`git log --oneline` 里的 `9d6f84e` 目录版默认、`6069e3f` 手机端适配、
-`744a071` 崩溃与日志、`fe6f824` 固定端口、`b061213` 部署脚本搬入）可以作为"为什么这么做"的索引。
+3. `git diff --stat upstream/master..master` 确认游戏仓库没有混进客户端专用代码；
+4. 有设备时按 `docs/PACKAGING.md` §16 跑一遍增量更新的真机验证（单人、局域网开服、第一次应用内更新）。
