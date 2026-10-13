@@ -372,14 +372,20 @@ export function deltaAsset(feed, local) {
  *
  * `null` means there is nothing to install on this platform at all. The plan is what the update row and the button
  * act on, so the decision (and its refusal rules) stays in one testable place.
+ *
+ * `delta: false` withholds the pack for a shell that cannot apply one (see fetchUpdate() in picker.js): the release
+ * that *introduces* the overlay cannot itself arrive as an overlay, so those clients must be offered the installer
+ * rather than a button that silently falls back.
  * @param {object|null} feed @param {{build?: number}|null} local @param {'android'|'win'} platform
+ * @param {{delta?: boolean}} [opts]
  * @returns {{mode: 'delta'|'apk', asset: object, delta: object|null, bytes: number, saved: number}|null}
  */
-export function updatePlan(feed, local, platform) {
+export function updatePlan(feed, local, platform, opts = {}) {
   const asset = updateAsset(feed, platform);
   if (!asset) return null;
   // Only the phone updates itself in place; the desktop hands over the download page, so a pack would be unused.
-  const delta = platform === 'android' ? deltaAsset(feed, local) : null;
+  const usable = opts.delta !== false && platform === 'android';
+  const delta = usable ? deltaAsset(feed, local) : null;
   if (delta && delta.size < asset.size) {
     return { mode: 'delta', asset, delta, bytes: delta.size, saved: asset.size - delta.size };
   }

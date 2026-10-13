@@ -161,9 +161,13 @@ async function fetchUpdate() {
   const url = String(globalThis.__SP_UPDATE_FEED__ ?? '').trim();
   if (!url) return null; // no feed baked in: make no request at all
   const platform = updatePlatform(globalThis.navigator?.userAgent);
+  // Can this shell apply a pack at all? The release that *introduces* the overlay cannot arrive as one, so offering
+  // its 75 MB pack would be a button that always falls back to the 529 MB installer.
+  const canDelta = platform === 'android'
+    && typeof globalThis.Capacitor?.Plugins?.AppUpdate?.applyDelta === 'function';
   const [local, feed] = await Promise.all([localIdentity(), readFeed(url)]);
   if (updateVerdict(local, feed) !== 'newer') return null;
-  return { feed, platform, local, plan: updatePlan(feed, local, platform) };
+  return { feed, platform, local, plan: updatePlan(feed, local, platform, { delta: canDelta }) };
 }
 
 const lookupUpdate = () => (updateLookup ??= fetchUpdate());

@@ -214,6 +214,13 @@ describe('when the picker offers the incremental pack', () => {
     assert.ok(!updateLabel(feedWin, 'win', plan).includes('增量'));
   });
 
+  test('a shell that cannot apply a pack is offered the installer, not a pack', () => {
+    // The release that introduces the overlay cannot itself arrive as one: those clients have no applyDelta.
+    assert.equal(updatePlan(feed, local, 'android', { delta: false }).mode, 'apk');
+    assert.equal(updatePlan(feed, local, 'android', { delta: true }).mode, 'delta');
+    assert.equal(updatePlan(feed, local, 'android').mode, 'delta', 'the default is to offer it');
+  });
+
   test('a feed without an installer for this platform offers nothing', () => {
     assert.equal(updatePlan({ version: '0.2.5', build: 6, delta: pack }, local, 'android'), null);
   });
