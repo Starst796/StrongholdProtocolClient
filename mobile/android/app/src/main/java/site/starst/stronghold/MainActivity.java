@@ -18,6 +18,7 @@ import java.util.Set;
 
 import site.starst.stronghold.host.HostServerPlugin;
 import site.starst.stronghold.update.AppUpdatePlugin;
+import site.starst.stronghold.update.OverlayRouteProcessor;
 
 /**
  * The game window: full screen, edge to edge.
@@ -53,6 +54,19 @@ public class MainActivity extends BridgeActivity {
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         applyImmersive();
         installCertificatePrompt();
+    }
+
+    /**
+     * Install the overlay's route processor before the bridge's first navigation.
+     *
+     * {@link OverlayRouteProcessor} is what makes an in-app update visible: Capacitor's local server asks it about
+     * every request for the local payload, and it answers with a file from the incremental overlay when there is one.
+     * It has to be set here — after the bridge exists nothing reloads the payload by itself.
+     */
+    @Override
+    protected void load() {
+        bridgeBuilder.setRouteProcessor(new OverlayRouteProcessor(this));
+        super.load();
     }
 
     /**

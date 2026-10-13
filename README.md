@@ -163,6 +163,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 客户端**会自己发现上游更新**并在主页（选择模式）底部提示：「有新版本 · 0.2.0 · build 13 · 64715116 · 下载 217.2 MB」。
 
 - **Android**：「下载并安装」在应用内流式下载 APK（边下边校验 sha256），然后交给系统安装器——签名一致 + `versionCode` 递增（本仓库自带构建号，见 [docs/PACKAGING.md](docs/PACKAGING.md) §14），所以是**覆盖安装，存档与设置都保留**。（Android 不允许静默安装，系统会弹一次确认；首次会引导你去允许「安装未知应用」。）
+- **Android 增量**：有增量包时提示行给的是「增量下载 74.7 MB（全量 455.1 MB）」，按钮变成「下载并更新」——只在应用内下载变化的文件、写进可写层再重载，**不经过安装器**（见 [docs/PACKAGING.md](docs/PACKAGING.md) §16）。失败会自动退回完整安装包。
 - **桌面版**：「打开下载页」用系统浏览器打开该版本的下载地址。当前分发形态是"目录版 + zip"，运行中的程序换不掉自己的文件，所以桌面端到此为止（要真自动更新得换 NSIS 安装器，见 [docs/PACKAGING.md](docs/PACKAGING.md) §4.1 / §14.4）。
 - **忽略此版本**：记住 `sp.shell.skipUpdate`，这一版不再提示，直到有更新的 build。
 - 检查是**尽力而为**：离线、feed 不可达、JSON 坏掉、schema 不认识，都只是"没有更新信息"，不会弹错、不会卡启动。`client.config.json` 的 `update.feed` 留空则**完全不发更新请求**。
@@ -179,7 +180,13 @@ Android 只会用新包**覆盖安装**与它**签名相同**的应用。本项�
 
 ## payload 清单与体积报告
 
-每份 payload 都带一份**清单** `payload.json`（每个文件的大小 + sha256），同一份内容也会作为 `payload-<build>.json` 一起发布——给"增量更新"用（客户端据此知道自己缺哪些文件），每次打包还会写出 `build/reports/report-<build>.md`：全量体积、目录分布，以及相对上一版的差集。例如 0.2.4 → 0.2.5 是 **85.0 MB / 670.9 MB（12.7%）**，其中 78.8 MB 是新素材。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §15。
+每份 payload 都带一份**清单** `payload.json`（每个文件的大小 + sha256），同一份内容也会作为 `payload-<build>.json` 一起发布——给增量更新用，每次打包还会写出 `build/reports/report-<build>.md`：全量体积、目录分布，以及相对上一版的差集。例如 0.2.4 → 0.2.5 是 **85.0 MB / 670.9 MB（12.7%）**，其中 78.8 MB 是新素材。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §15。
+
+## 应用内增量更新（Android）
+
+有增量包时，手机上的更新提示变成「**增量下载 74.7 MB（全量 455.1 MB）**」，点一下就在**应用内**完成：只下载变化的 1824 个文件，落到可写层（`filesDir/overlay/<build>/`）后自动重载——不用系统安装器、不重装、存档天然不受影响。
+
+任何一条不满足就退回完整安装包：客户端不在基准版本上、增量包校验失败、这一版删过文件、包比安装包还大。桌面端不变（仍是"打开下载页"）。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §16。
 
 ## 许可
 

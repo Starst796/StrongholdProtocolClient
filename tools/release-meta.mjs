@@ -121,6 +121,7 @@ export function sha256File(file, chunk = 1 << 20) {
  *   tag: string, repo: string, publishedAt?: string,
  *   assets?: { win?: {name: string, sha256: string, size: number}, android?: {name: string, sha256: string, size: number} },
  *   payload?: {name: string, sha256: string, size: number, files: number, bytes: number, schema?: number},
+ *   delta?: {name: string, sha256: string, size: number, base?: number, files?: number, bytes?: number},
  *   baseBuild?: number|null,
  * }} input
  */
@@ -149,6 +150,13 @@ export function buildLatestFeed(input) {
     const p = input.payload;
     feed.payload = { name: p.name, url: assetUrl(repo, tag, p.name), sha256: p.sha256, size: p.size, files: p.files, bytes: p.bytes, schema: p.schema ?? null };
     if (input.baseBuild != null) feed.payload.base = input.baseBuild;
+  }
+  // The incremental pack (tools/payload-delta.mjs): the same update, minus the 585 MB of files that did not change.
+  // `base` is the build it applies on top of — a client on any other build must take the full installer, because the
+  // pack only holds the difference and there is nothing to verify the rest against.
+  if (input.delta) {
+    const d = input.delta;
+    feed.delta = { name: d.name, url: assetUrl(repo, tag, d.name), sha256: d.sha256, size: d.size, base: d.base ?? null, files: d.files ?? null, bytes: d.bytes ?? null };
   }
   return feed;
 }

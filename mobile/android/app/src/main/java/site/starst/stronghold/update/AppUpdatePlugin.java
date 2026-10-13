@@ -127,34 +127,14 @@ public class AppUpdatePlugin extends Plugin {
                 conn = open(url);
                 downloading = conn;
                 long total = conn.getContentLengthLong();
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                long received = 0;
-                long announced = 0;
-                try (InputStream in = conn.getInputStream(); FileOutputStream file = new FileOutputStream(temp)) {
-                    byte[] buf = new byte[COPY_BUFFER];
-                    for (int n; (n = in.read(buf)) > 0; ) {
-                        if (cancelled) throw new IOException("cancelled");
-                        file.write(buf, 0, n);
-                        digest.update(buf, 0, n);
-                        received += n;
-                        if (received - announced >= PROGRESS_STEP) {
-                            announced = received;
-                            emitProgress(received, total);
-                        }
-                    }
-                    file.getFD().sync();
-                }
-                String got = hex(digest.digest());
-                if (!got.equals(expected)) {
-                    // A truncated or substituted download: delete it rather than offer it to the installer.
-                    temp.delete();
-                    out.put("error", "下载校验失败（文件可能不完整），请重试。");
-                } else if (target.exists() && !target.delete()) {
+                long received = fetchTo(conn.getInputStream(), temp, expected, total);
+                emitProgress(received, total);
+                if (target.exists() && !target.delete()) {
                     out.put("error", "无法替换上一次的下载，请重试。");
                 } else if (!temp.renameTo(target)) {
                     out.put("error", "无法保存下载的文件，请重试。");
                 } else {
-                    out.put("path", target.getAbsolutePath()).put("size", received).put("sha256", got);
+                    out.put("path", target.getAbsolutePath()).put("size", received).put("sha256", expected);
                 }
             } catch (Exception e) {
                 temp.delete();
@@ -287,14 +267,158 @@ public class AppUpdatePlugin extends Plugin {
     }
 
     private void emitProgress(long received, long total) {
-        JSObject event = new JSObject().put("received", received).put("total", total);
-        // Capacitor's listener list is not thread-safe: events are delivered on the main thread, like the host's.
-        getBridge().executeOnMainThread(() -> notifyListeners("progress", event));
+        emit("progress", new JSObject().put("received", received).put("total", total));
+    }
+
+    /** Capacitor's listener list is not thread-safe: events are delivered on the main thread, like the host's. */
+    private void emit(String event, JSObject data) {
+        getBridge().executeOnMainThread(() -> notifyListeners(event, data));
     }
 
     /** Capacitor wants a PluginCall resolved on the main thread. */
     private void resolve(PluginCall call, JSObject out) {
         getBridge().executeOnMainThread(() -> call.resolve(out));
+    }
+
+    /**
+     * The incremental path: download a delta pack, unpack it into the writable overlay and make it live. Resolves
+     * {@code { ok, build, files, bytes }} — the caller then calls {@code reload} to run the new code.
+     *
+     * The pack is only for the build the client is actually running ({@code delta.base}): it holds the difference,
+     * so there is nothing else to verify the rest of the payload against. The plugin checks that itself rather than
+     * trusting the page — the base decides whether the result is a working client or a mix of two versions.
+     *
+     * Same verification as an APK download: sha256 of the whole pack, then the pack's own per-file list as it is
+     * unpacked. Nothing is activated unless every file matches.
+     */
+    @PluginMethod
+    public void applyDelta(PluginCall call) {
+        String url = allowed(call.getString("url"));
+        String want = call.getString("sha256");
+        String name = call.getString("name");
+        Integer to = call.getInt("build");
+        String version = call.getString("version");
+        if (url == null || want == null || name == null || to == null || to <= 0) {
+            call.resolve(new JSObject().put("error", "applyDelta 需要 url / sha256 / name / build"));
+            return;
+        }
+        final String expected = want.trim().toLowerCase(Locale.ROOT);
+        if (!expected.matches(SHA256_HEX)) {
+            call.resolve(new JSObject().put("error", "校验串格式不对"));
+            return;
+        }
+        final OverlayStore store = OverlayStore.get(getContext());
+        final int installed = store.installedBuild();
+        if (installed <= 0) {
+            call.resolve(new JSObject().put("error", "认不出当前版本，请改用完整安装包。"));
+            return;
+        }
+        if (to <= installed) {
+            call.resolve(new JSObject().put("error", "这一版不比当前版本新，跳过。"));
+            return;
+        }
+        final File target;
+        final File temp;
+        try {
+            target = new File(downloadDir(), safeName(name));
+            temp = new File(target.getParentFile(), target.getName() + ".part");
+        } catch (Exception e) {
+            call.resolve(new JSObject().put("error", message(e)));
+            return;
+        }
+
+        cancelled = false;
+        final int build = to;
+        final String packVersion = version == null ? "" : version;
+        getBridge().execute(() -> {
+            JSObject out = new JSObject();
+            HttpURLConnection conn = null;
+            try {
+                conn = open(url);
+                downloading = conn;
+                long total = conn.getContentLengthLong();
+                long received = fetchTo(conn.getInputStream(), temp, expected, total);
+                if (target.exists() && !target.delete()) throw new IOException("无法替换上一次的下载");
+                if (!temp.renameTo(target)) throw new IOException("无法保存下载的文件");
+                emitProgress(received, total);
+                // Unpacking 75 MB and hashing every file takes a few seconds on a phone: keep the hint line moving.
+                int files = store.apply(target, build, (done, of) -> emit("unpack", new JSObject().put("files", done).put("total", of)));
+                // The pack has served its purpose; a stale one in the cache is only a way to fill the disk.
+                //noinspection ResultOfMethodCallIgnored
+                target.delete();
+                out.put("ok", true).put("build", build).put("version", packVersion)
+                    .put("files", files).put("bytes", received).put("installedBuild", store.installedBuild());
+            } catch (Exception e) {
+                temp.delete();
+                out.put("error", cancelled ? "已取消下载。" : message(e));
+            } finally {
+                downloading = null;
+                if (conn != null) conn.disconnect();
+            }
+            resolve(call, out);
+        });
+    }
+
+    /** What the client is running right now (the APK's payload plus any overlay) — for the picker's diagnostics. */
+    @PluginMethod
+    public void overlayStatus(PluginCall call) {
+        call.resolve(OverlayStore.get(getContext()).status());
+    }
+
+    /**
+     * Restart the WebView on the payload as it stands now. A successful {@code applyDelta} only changes files on
+     * disk; the running page keeps its already-loaded code until this. The cache is dropped first — the local server
+     * sets no cache headers, so the WebView is otherwise free to reuse what it fetched before the update.
+     */
+    @PluginMethod
+    public void reload(PluginCall call) {
+        getBridge().executeOnMainThread(() -> {
+            try {
+                android.webkit.WebView webView = getBridge().getWebView();
+                if (webView != null) webView.clearCache(true);
+                getBridge().reload();
+                call.resolve(new JSObject().put("ok", true));
+            } catch (Exception e) {
+                call.resolve(new JSObject().put("error", message(e)));
+            }
+        });
+    }
+
+    /** Drop the overlay and go back to the APK's own payload (the repair path, and what a full install means). */
+    @PluginMethod
+    public void clearOverlay(PluginCall call) {
+        OverlayStore.get(getContext()).clear();
+        call.resolve(OverlayStore.get(getContext()).status());
+    }
+
+    /**
+     * Stream a download into {@code file} while hashing it, returning the bytes written. Throws when the sha256 does
+     * not match, deleting the file: nothing unverified may reach the overlay.
+     */
+    private long fetchTo(InputStream in, File file, String expected, long total) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        long received = 0;
+        long announced = 0;
+        try (InputStream stream = in; FileOutputStream out = new FileOutputStream(file)) {
+            byte[] buf = new byte[COPY_BUFFER];
+            for (int n; (n = stream.read(buf)) > 0; ) {
+                if (cancelled) throw new IOException("cancelled");
+                out.write(buf, 0, n);
+                digest.update(buf, 0, n);
+                received += n;
+                if (received - announced >= PROGRESS_STEP) {
+                    announced = received;
+                    emitProgress(received, total);
+                }
+            }
+            out.getFD().sync();
+        }
+        if (!hex(digest.digest()).equals(expected)) {
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            throw new IOException("下载校验失败（文件可能不完整），请重试。");
+        }
+        return received;
     }
 
     private static String hex(byte[] bytes) {

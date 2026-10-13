@@ -30,8 +30,8 @@ import {
   BUILTIN_SERVERS, FEED_TIMEOUT_MS, K_AUTOSTART, K_CHOSEN, K_HOST_PORT, K_LIST, K_MODE, K_SERVER, K_SKIP_UPDATE,
   NAME_MAX, HOST_PORT_DEFAULT,
   PROBE_HELLO, addressError, ambiguousScheme, autostartOn, cleanName, customFrom, hostPortError, hostPortValue,
-  isAndroidUA, parseLatestFeed, parseProbeReply, serverName, shouldShowPicker, updateAsset, updateLabel,
-  updatePlatform, updateVerdict, versionLabel, versionMismatchHint, versionVerdict,
+  isAndroidUA, mb, parseLatestFeed, parseProbeReply, serverName, shouldShowPicker, updateAsset, updateLabel,
+  updatePlatform, updatePlan, updateVerdict, versionLabel, versionMismatchHint, versionVerdict,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -163,7 +163,7 @@ async function fetchUpdate() {
   const platform = updatePlatform(globalThis.navigator?.userAgent);
   const [local, feed] = await Promise.all([localIdentity(), readFeed(url)]);
   if (updateVerdict(local, feed) !== 'newer') return null;
-  return { feed, platform };
+  return { feed, platform, local, plan: updatePlan(feed, local, platform) };
 }
 
 const lookupUpdate = () => (updateLookup ??= fetchUpdate());
@@ -481,12 +481,16 @@ function mount() {
   /** Start the update for this shell (the phone installs it in place; the desktop hands over the download page). */
   async function startUpdate() {
     const feed = updateOffer?.feed;
+    const plan = updateOffer?.plan;
     const asset = updateAsset(feed, updateOffer?.platform);
     if (!asset) {
       setHint('这个版本没有为这台设备准备安装包，请到发布页手动下载。');
       return;
     }
     if (updateOffer.platform === 'android') {
+      // The incremental pack first: ~75 MB instead of ~455 MB, and no system installer at all. Anything it refuses
+      // (an older APK, a failed verification, an install from elsewhere) falls through to the full installer below.
+      if (plan?.mode === 'delta' && await applyDeltaOnAndroid(feed, plan)) return;
       await installOnAndroid(feed, asset);
       return;
     }
@@ -494,6 +498,46 @@ function mount() {
     // the download page is where this ends (docs/PACKAGING.md §10 has the installer-based path for later).
     const opened = await openUrl(asset.url);
     setHint(opened ? '已在浏览器打开下载页。' : `请手动下载：${asset.url}`);
+  }
+
+  /**
+   * Apply the incremental pack and restart on it. Returns false when the caller should use the full installer
+   * instead — an older APK without the plugin method, a pack that does not verify, a download the player lost
+   * patience with. The pack only ever lands in filesDir/overlay, so a failure leaves the client exactly as it was.
+   */
+  async function applyDeltaOnAndroid(feed, plan) {
+    const plugin = globalThis.Capacitor?.Plugins?.AppUpdate;
+    if (typeof plugin?.applyDelta !== 'function') return false;
+    const delta = plan.delta;
+    setHint(`正在下载增量更新…（${mb(delta.size)}，全量 ${mb(plan.asset.size)}）`);
+    const showProgress = typeof plugin.addListener === 'function'
+      ? plugin.addListener('progress', ({ received, total }) => {
+        const pct = total > 0 ? ` ${Math.floor((received / total) * 100)}%` : '';
+        setHint(`正在下载增量更新…${pct}（${(received / 1048576).toFixed(0)}/${(total / 1048576).toFixed(0)} MB）`);
+      })
+      : null;
+    const showUnpack = typeof plugin.addListener === 'function'
+      ? plugin.addListener('unpack', ({ files, total }) => setHint(`正在应用更新…（${files}/${total} 个文件）`))
+      : null;
+    try {
+      const got = await plugin.applyDelta({
+        url: delta.url, sha256: delta.sha256, name: delta.name, build: feed.build, version: feed.version,
+      });
+      if (got?.error) {
+        setHint(`增量更新失败：${got.error} 改用完整安装包…`);
+        return false;
+      }
+      if (!got?.ok) return false;
+      setHint(`更新完成（build ${got.build}），正在重新载入…`);
+      await plugin.reload?.();
+      return true;
+    } catch (e) {
+      setHint(`增量更新失败：${e?.message || e} 改用完整安装包…`);
+      return false;
+    } finally {
+      showProgress?.remove?.();
+      showUnpack?.remove?.();
+    }
   }
 
   /** Repaint the update row — the home screen is the only place it exists. */
@@ -509,13 +553,16 @@ function mount() {
       return;
     }
     const asset = updateAsset(feed, updateOffer.platform);
+    const plan = updateOffer.plan;
+    const delta = plan?.mode === 'delta' ? plan.delta : null;
     el.hidden = false;
     el.innerHTML = `
-      <div class="sp-pick__updhead">有新版本 · <b>${esc(updateLabel(feed, updateOffer.platform))}</b></div>
+      <div class="sp-pick__updhead">有新版本 · <b>${esc(updateLabel(feed, updateOffer.platform, plan))}</b></div>
       ${feed.notes ? `<div class="sp-pick__note">${esc(feed.notes)}</div>` : ''}
       ${asset ? '' : '<div class="sp-pick__note">这个版本没有为这台设备准备安装包。</div>'}
+      ${delta ? `<div class="sp-pick__note">增量更新只下载变化的 ${delta.files ?? '?'} 个文件，在应用内直接生效（不用安装器，存档不受影响）。</div>` : ''}
       <div class="sp-pick__lanbtns">
-        <button class="sp-pick__btn is-go" id="sp-upd-go">${updateOffer.platform === 'android' ? '下载并安装' : '打开下载页'}</button>
+        <button class="sp-pick__btn is-go" id="sp-upd-go">${updateOffer.platform !== 'android' ? '打开下载页' : delta ? '下载并更新' : '下载并安装'}</button>
         <button class="sp-pick__btn" id="sp-upd-skip">忽略此版本</button>
       </div>`;
     el.querySelector('#sp-upd-go')?.addEventListener('click', startUpdate);

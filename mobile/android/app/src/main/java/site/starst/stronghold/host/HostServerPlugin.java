@@ -9,8 +9,10 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.io.File;
 import java.io.IOException;
 
+import site.starst.stronghold.update.OverlayStore;
 /**
  * The bridge between the phone's LAN server and the game logic.
  *
@@ -55,8 +57,14 @@ public class HostServerPlugin extends Plugin {
         getBridge().execute(() -> {
             try {
                 AssetManager assets = getContext().getAssets();
-                MiniHostServer started = new MiniHostServer(
-                    new AssetStaticSource(assets, "public"), listener(), port, strict ? MiniHostServer.STRICT : PORT_SEARCH);
+                // The payload may be partly replaced by an incremental update (filesDir/overlay): guests must get
+                // exactly what the host's own page runs, or the two sides disagree about the game (see OverlayStore).
+                File overlayDir = OverlayStore.get(getContext()).activeDir();
+                StaticSource source = new AssetStaticSource(assets, "public");
+                if (overlayDir != null) {
+                    source = new OverlayStaticSource(new DirStaticSource(overlayDir.toPath()), source);
+                }
+                MiniHostServer started = new MiniHostServer(source, listener(), port, strict ? MiniHostServer.STRICT : PORT_SEARCH);
                 started.start();
                 server = started;
                 JSObject result = status();

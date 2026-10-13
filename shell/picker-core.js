@@ -334,17 +334,82 @@ export function updateAsset(feed, platform) {
 }
 
 /**
- * One line describing what is offered ("0.1.3 · build 12 · 6471511 · 下载 217.2 MB") — enough to decide without
- * opening anything.
- * @param {object|null} feed @param {'android'|'win'} platform
+ * The incremental pack of the feed (`delta`), or null when this client cannot use one.
+ *
+ * A delta pack holds only the files that changed between two builds, so it applies to *one* base: the build the
+ * client is running now. Everything else has to take the full installer — the pack has nothing to say about the
+ * files it does not carry, and a client that is not on the base would end up running a mix of two versions.
+ *
+ * The pack is verified twice on the phone (its own sha256, then every file against the list inside it), which is
+ * what makes a short or interrupted download harmless. Also refused: a "delta" that is not actually smaller than
+ * the installer (nothing to gain, so take the well-trodden path).
+ * @param {object|null} feed
+ * @param {{build?: number}|null} local what /build.json says this client is
+ * @returns {{name: string, url: string, sha256: string, size: number, base: number, files: number|null,
+ *            bytes: number|null}|null}
  */
-export function updateLabel(feed, platform) {
+export function deltaAsset(feed, local) {
+  const raw = feed?.delta;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const asset = feedAsset(raw);
+  if (!asset) return null;
+  const base = Number(raw.base);
+  const build = Number(local?.build);
+  if (!Number.isInteger(base) || base < 1) return null;
+  if (!Number.isInteger(build) || build !== base) return null;
+  const files = Number(raw.files);
+  const bytes = Number(raw.bytes);
+  return {
+    ...asset,
+    base,
+    files: Number.isFinite(files) && files > 0 ? files : null,
+    bytes: Number.isFinite(bytes) && bytes > 0 ? bytes : null,
+  };
+}
+
+/**
+ * What this shell would do about the feed: install the incremental pack, or the full installer.
+ *
+ * `null` means there is nothing to install on this platform at all. The plan is what the update row and the button
+ * act on, so the decision (and its refusal rules) stays in one testable place.
+ * @param {object|null} feed @param {{build?: number}|null} local @param {'android'|'win'} platform
+ * @returns {{mode: 'delta'|'apk', asset: object, delta: object|null, bytes: number, saved: number}|null}
+ */
+export function updatePlan(feed, local, platform) {
+  const asset = updateAsset(feed, platform);
+  if (!asset) return null;
+  // Only the phone updates itself in place; the desktop hands over the download page, so a pack would be unused.
+  const delta = platform === 'android' ? deltaAsset(feed, local) : null;
+  if (delta && delta.size < asset.size) {
+    return { mode: 'delta', asset, delta, bytes: delta.size, saved: asset.size - delta.size };
+  }
+  return { mode: 'apk', asset, delta: null, bytes: asset.size, saved: 0 };
+}
+
+/**
+ * One line describing what is offered ("0.1.3 · build 12 · 6471511 · 下载 217.2 MB") — enough to decide without
+ * opening anything. With an incremental plan it names both sizes, because "74.7 MB instead of 455.1 MB" is the
+ * whole point of the pack.
+ * @param {object|null} feed @param {'android'|'win'} platform @param {object|null} [plan] see updatePlan()
+ */
+export function updateLabel(feed, platform, plan = null) {
   if (!feed) return '';
   const bits = [];
   if (feed.version) bits.push(feed.version);
   if (Number.isInteger(feed.build)) bits.push(`build ${feed.build}`);
   if (feed.commit) bits.push(feed.commit.slice(0, 8));
   const asset = updateAsset(feed, platform);
-  if (asset) bits.push(`下载 ${(asset.size / 1048576).toFixed(1)} MB`);
+  const delta = plan?.mode === 'delta' ? plan.delta : null;
+  if (asset) {
+    bits.push(delta
+      ? `增量下载 ${mb(delta.size)}（全量 ${mb(asset.size)}）`
+      : `下载 ${mb(asset.size)}`);
+  }
   return bits.join(' · ');
+}
+
+/** `74.7 MB` — sizes in the feed are bytes; the row shows whole-ish MB. */
+export function mb(bytes) {
+  const n = Number(bytes);
+  return Number.isFinite(n) && n > 0 ? `${(n / 1048576).toFixed(1)} MB` : '';
 }

@@ -46,9 +46,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, loadConfig } from './package-client.mjs';
 import { INVENTORY_FILE, buildInventory, diffInventory, findBaseInventory, human, inventoryReport, readInventory, writeInventory } from './payload-inventory.mjs';
+import { auditPayloadAgainstInventory, deltaEntry, deltaFileName, writeDeltaPack } from './payload-delta.mjs';
 import { androidVersionCode, buildLatestFeed, nextBuild, readRelease, releaseTag, sha256File, versionCode, writeRelease } from './release-meta.mjs';
 import { findGameRoot, readAppVersion, readProtocolVersion } from './game-contract.mjs';
 import { buildDesktop } from './package-desktop.mjs';
+import { zipDir } from './zip.mjs';
 
 /** Files whose version field tracks the game repo (same set as commit 1ca6d71). */
 export const VERSION_JSON = Object.freeze(['package.json', 'desktop/package.json', 'mobile/package.json']);
@@ -147,25 +149,6 @@ function findSdk() {
 }
 
 /** Compress `dir` into `zipPath` (the folder itself becomes the zip's single root entry). */
-function zipDir(dir, zipPath) {
-  fs.rmSync(zipPath, { force: true });
-  const args = (tool) => ['-a', '-c', '-f', zipPath, '-C', path.dirname(dir), path.basename(dir)];
-  if (process.platform === 'win32' || process.env.SP_ZIP === 'tar') {
-    run('tar', args());
-    return;
-  }
-  // GNU/Linux and macOS: `zip` is the reliable one; bsdtar (`tar -a`) or 7z as fallbacks.
-  for (const tool of ['zip', '7z', 'tar']) {
-    const probe = spawnSync(tool, ['--help'], { encoding: 'utf8' });
-    if (probe.error) continue;
-    if (tool === 'zip') run('zip', ['-q', '-r', zipPath, path.basename(dir)], { cwd: path.dirname(dir) });
-    else if (tool === '7z') run('7z', ['a', '-mx=9', zipPath, path.basename(dir)], { cwd: path.dirname(dir) });
-    else run('tar', args());
-    return;
-  }
-  throw new Error('找不到压缩工具（zip / 7z / tar）—— 用 --no-zip 跳过，或装一个');
-}
-
 function dirBytes(dir) {
   let n = 0;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) n += e.isDirectory() ? dirBytes(path.join(dir, e.name)) : fs.statSync(path.join(dir, e.name)).size;
@@ -335,7 +318,7 @@ export function release(o = {}) {
     inventory: built.inventory, payloadRoot: built.out, version, build,
     dist, baseInventory: o.baseInventory, log,
   });
-  artifacts.push(inv.distFile);
+  if (inv.delta) artifacts.push(inv.deltaFile);
 
   const repo = String(o.repo ?? config.update?.repo ?? '').trim();
   const tag = String(o.tag ?? '').trim() || releaseTag(version, build);
@@ -358,6 +341,7 @@ export function release(o = {}) {
       gameCommit: built.game?.commit ? String(built.game.commit) : null,
       payload: { ...assetEntry(inv.distFile), files: inv.inventory.totals.files, bytes: inv.inventory.totals.bytes, schema: inv.inventory.schema },
       baseBuild: inv.base?.build ?? null,
+      delta: inv.delta,
     });
     const feedPath = path.join(dist, 'latest.json');
     fs.writeFileSync(feedPath, JSON.stringify(feed, null, 2) + '\n');
@@ -391,7 +375,8 @@ export function release(o = {}) {
  *
  * @param {{ inventory?: object|null, payloadRoot?: string, version: string, build: number, dist: string,
  *   baseInventory?: string, log?: (...a: any[]) => void }} o
- * @returns {{ inventory: object, file: string, distFile: string, base: object|null, diff: object|null, reportFile: string }}
+ * @returns {{ inventory: object, file: string, distFile: string, base: object|null, diff: object|null,
+ *   reportFile: string, delta: object|null, deltaFile: string }}
  */
 export function writeInventoryArtifacts(o) {
   const log = o.log ?? (() => {});
@@ -419,9 +404,44 @@ export function writeInventoryArtifacts(o) {
   const baseInv = base ? readInventory(base.file) : null;
   const diff = baseInv ? diffInventory(baseInv, inv) : null;
   const reportFile = path.join(CLIENT_ROOT, 'build', 'reports', `report-${o.build}.md`);
+
+  // The incremental pack (tools/payload-delta.mjs) — only for a client that is on the base build, and only when the
+  // payload really is the tree the 清单 describes (a stale pair would ship a pack that leaves a client half-updated).
+  // Failing here is not fatal for the release: no delta means the client takes the full installer, which is the same
+  // behaviour as every release before this one.
+  let delta = null;
+  const deltaFile = path.join(o.dist, deltaFileName(baseInv?.build ?? 0, o.build));
+  if (!diff || !o.payloadRoot) {
+    log('package-release: 没有基准清单 —— 这一版不带增量包（客户端走全量安装）');
+  } else if (!diff.uploadFiles) {
+    log('package-release: 和上一版没有差异 —— 不需要增量包');
+  } else if (diff.removed.length) {
+    // An overlay is a *layer* over the APK: it can replace and add files, but it cannot delete the APK's copies.
+    // A release that removes payload files therefore goes out as a full installer only — the alternative would be a
+    // client that keeps serving a module upstream deleted.
+    log(`package-release: 这一版删除了 ${diff.removed.length} 个 payload 文件 —— 不做增量包（客户端走全量安装）`);
+  } else {
+    try {
+      const audit = auditPayloadAgainstInventory(o.payloadRoot, inv);
+      if (audit.missing.length || audit.extra.length) {
+        throw new Error(`清单与 payload 对不上（缺 ${audit.missing.length} / 多 ${audit.extra.length}，例如 `
+          + `${[...audit.missing, ...audit.extra].slice(0, 3).join(', ')}）`);
+      }
+      const pack = writeDeltaPack({
+        payloadRoot: o.payloadRoot, inventory: inv, diff, from: baseInv.build, to: o.build,
+        version: o.version, out: deltaFile, log,
+      });
+      delta = { ...deltaEntry(pack.file, pack.meta), base: baseInv.build, from: baseInv.build, to: o.build, originalBytes: pack.bytes };
+    } catch (e) {
+      fs.rmSync(deltaFile, { force: true });
+      log(`package-release: 增量包没打成（${e.message}）—— 这一版客户端走全量安装`);
+    }
+  }
+
   fs.mkdirSync(path.dirname(reportFile), { recursive: true });
   fs.writeFileSync(reportFile, inventoryReport({
     inv, diff, baseBuild: baseInv?.build ?? null, baseVersion: baseInv?.version ?? null,
+    deltaFile: delta ? { name: delta.name, size: delta.size } : null,
   }));
   log(`package-release: 清单 → ${path.relative(CLIENT_ROOT, file).split(path.sep).join('/')}`
     + `（${inv.totals.files} 个文件, ${human(inv.totals.bytes)}，同时作为发布产物 payload-${o.build}.json）`);
@@ -433,7 +453,11 @@ export function writeInventoryArtifacts(o) {
   } else {
     log(`package-release: 体积报告 → ${rel}（没有基准清单，只报全量）`);
   }
-  return { inventory: inv, file, distFile, base: baseInv, diff, reportFile };
+  if (delta) {
+    log(`package-release: 增量包 → ${path.relative(CLIENT_ROOT, deltaFile).split(path.sep).join('/')}`
+      + `（build ${delta.base} → ${o.build}，${delta.files} 个文件，${human(delta.bytes)} 原始 → ${human(delta.size)}）`);
+  }
+  return { inventory: inv, file, distFile, base: baseInv, diff, reportFile, delta, deltaFile };
 }
 
 /** `{name, sha256, size}` for one artifact — the shape buildLatestFeed() publishes. Null when there is no artifact. */

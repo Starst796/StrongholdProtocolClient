@@ -557,3 +557,58 @@ feed（`latest.json`）里多一个 `payload` 字段（schema 仍是 1，老客�
 
 清单与 payload 必须是**同一次生成**：`writeInventoryArtifacts()` 会逐字节比对 payload 内的 `payload.json` 与 `build/dist/payload-<build>.json`，不一致就报错（改过 payload 或版本号没对齐时最容易踩到）。
 
+## 16. 应用内增量更新（Android overlay）
+
+每次打包，只要和上一版有差异，就会多出一个**增量包** `build/dist/delta-<base>-<build>.zip`：只装变化的文件，外加它自己的校验清单 `payload/delta.json`。
+
+实测 0.2.4 → 0.2.5：**1824 个文件，85.0 MB 原始 → 74.7 MB 压缩**（全量 APK 455.1 MB，体积报告 `build/reports/report-6.md`）。客户端点一下「下载并更新」就完成，**不用安装器、不重装、存档天然不受影响**。
+
+### 16.1 为什么不能直接替换文件
+
+APK 里的 `assets/public/**` 是只读的（应用改不了自己的安装包），WebView 也是 Capacitor 从那里读的。所以增量结果落在**可写层**上：
+
+```
+filesDir/overlay/active.json            { build, version, files, at }
+filesDir/overlay/<build>/…              变化过的文件（payload 相对路径）
+filesDir/overlay/<build>/payload.json   合并后的清单（APK 的清单 + 本次替换的条目）
+```
+
+两个读者在读资源前先看这层，未命中就照旧走 APK：
+
+| 读者 | 接缝 |
+|---|---|
+| WebView | [`OverlayRouteProcessor`](mobile/android/app/src/main/java/site/starst/stronghold/update/OverlayRouteProcessor.java)：Capacitor 的本地服务器对**每个请求**都会问 `RouteProcessor`；返回绝对路径 + `asset=false` 时它用 `FileInputStream` 直接读那个文件。这是公开 API（`Bridge.Builder.setRouteProcessor`），不需要 fork 或反射 |
+| 局域网开服 | [`OverlayStaticSource`](mobile/android/app/src/main/java/site/starst/stronghold/host/OverlayStaticSource.java) 包住 `AssetStaticSource`：客人拿到的必须和主机自己跑的是同一份文件 |
+
+更新的**基准永远是已装的 APK**（Android 校过签名的那份），overlay 只往上叠。装了更新的完整 APK 后，比它旧的 overlay 会被自动删掉（`OverlayStore.active()`）。
+
+### 16.2 什么时候拒绝增量
+
+| 情况 | 处理 |
+|---|---|
+| 客户端不在 `delta.base`（版本落后太多、装的是别处打的包） | 走完整安装包 |
+| 本地版本号读不出来（`installedBuild()` = 0） | 走完整安装包 |
+| 增量包比 APK 还大 | 走完整安装包 |
+| 这一版**删除**了 payload 文件 | 打包时就不出增量包（overlay 无法从 APK 里"删"文件），客户端走全量 |
+| 下载 sha256 不符 / 解包时任一文件校验失败 / 包不完整 | 报错并**保持原样**（解包在 `<build>.staging` 里，只有全部通过才 rename 生效） |
+
+### 16.3 发布与验证
+
+`tools/package-release.mjs` 会自动算清单、和上一版做差集、打增量包，并写进 feed：
+
+```json
+"delta": { "name": "delta-5-6.zip", "url": "…", "sha256": "…", "size": 78339726,
+           "base": 5, "files": 1824, "bytes": 89128960 }
+```
+
+`tools/publish-release.mjs` 按 feed 里出现的每个产物上传（安装包 → 清单/增量包 → `latest.json` 最后），清单缺失会让发布直接失败——不会发出一个指向 404 的 feed。
+
+纯逻辑部分有测试钉住（`test/payload-delta.test.js`、`test/overlay.test.js`，含 Capacitor 接缝的形状检查：Capacitor 升级改动这些内部行为会让测试红，而不是让装了更新的手机白屏）。设备上仍需人工确认的：
+
+```bash
+# 1) 装上一版 APK，主页应出现「有新版本 … 增量下载 74.7 MB（全量 455.1 MB）」
+# 2) 点「下载并更新」→ 观察进度 → 自动重载；重载后 build.json 的 build 应是新的、不再提示更新
+# 3) 局域网开服后，客人拿到的 index.html/js 与主机一致（overlay 生效）
+# 4) 修复路径：clearOverlay()（插件方法）删掉 overlay 回到 APK 自身
+```
+

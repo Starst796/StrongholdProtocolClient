@@ -204,6 +204,10 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 手工算清单时报"清单和 payload 不是同一次生成" | `package.json` 的版本号是 `package-release` **开始构建前**才对齐到游戏版本的：直接拿游戏仓库的 `APP_VERSION` 去算当前 payload 的清单，版本字段就对不上（`payload.json` 记的是 `build.json` 里 `client.version`）。手工调用时读 `build/client/www/build.json` 的 `client`，或者干脆不传 inventory（`writeInventoryArtifacts` 会读 payload 里那一份，省一次 670 MB 哈希） |
 | 新 clone 里 `build/inventories/` 是空的，做不了增量基准 | `build/` 不进版本库。从**上一版已发布的桌面 zip** 重建基准：`node tools/payload-inventory.mjs --from-zip build/dist/StrongholdProtocol-0.2.4-win-x64.zip`（payload 在 zip 内 `win-unpacked/resources/www/`，版本/build 号从包内 `build.json` 读），或用 `--base-inventory` 指到别处 |
 | 差集把基准选成了自己或更新的 build | `findBaseInventory()` 只认**小于**当前 build 的最新一份；改 build 号重打时别把新清单留在 `build/inventories/` 里当基准 |
+| 增量包在手机上解不开（`ZipInputStream`） | 主机的 `tar`（bsdtar）写 zip 时把每个条目的长度放进**尾部数据描述符**（通用标志位 bit 3），流式读法得自己去找它。客户端因此用 **`ZipFile`**（读中央目录，那里长度永远是真的），并且能按名字直接取 `payload/delta.json`，省掉一整趟 75 MB 的解压。`test/payload-delta.test.js` 也用中央目录读法解析，并对齐这一行为 |
+| 增量更新后页面还是旧代码 | WebView 有缓存，而 Capacitor 的本地服务器不设缓存头。`AppUpdatePlugin.reload()` 先 `webView.clearCache(true)` 再 `bridge.reload()`；只写 overlay 不重载，页面照旧跑内存里的旧代码 |
+| 以为改 `assets` 就能更新 | 应用改不了自己的 APK。增量一律落在 `filesDir/overlay/<build>/`，靠 `RouteProcessor`（WebView）+ `OverlayStaticSource`（局域网开服）叠在 APK 上面；`APK build >= overlay build` 时 overlay 会被丢弃，否则装了新 APK 还会跑到旧代码 |
+| 增量包里有文件删不掉 | overlay 是"层"，删不掉 APK 里的副本。所以**这一版有删除就不出增量包**（`package-release` 里判断 `diff.removed.length`），客户端走全量安装 |
 
 ## 7. 交付
 
