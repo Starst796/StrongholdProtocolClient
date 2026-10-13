@@ -76,9 +76,13 @@ public final class OverlayStore {
 
     private final Context context;
     private final File root;
-    /** Resolved once per process; apply()/clear()/active() refresh it. */
-    private Integer activeBuild;
-    private Set<String> activeFiles;
+    /**
+     * Resolved once per process, then kept: the overlay is only ever changed by apply()/clear(), which refresh it.
+     * `volatile` because a WebView request thread reads it (per request) while the update thread writes it.
+     */
+    private volatile Integer activeBuild;
+    private volatile JSONObject activeState;
+    private volatile Set<String> activeFiles;
 
     /** Progress of a long unpack, for the picker's hint line. */
     public interface Progress {
@@ -243,6 +247,7 @@ public final class OverlayStore {
     /** Drop the overlay; the APK's payload is the truth again. */
     public void clear() {
         deleteTree(root);
+        activeState = null;
         activeBuild = 0;
         activeFiles = null;
     }
@@ -319,15 +324,12 @@ public final class OverlayStore {
     }
 
     /**
-     * The active overlay's state, or null. Resolved from disk once, then cached for the process — and the moment a
-     * *newer* APK shows up, an older overlay is deleted instead of being served (the package's payload has to win).
+     * The active overlay's state, or null. Resolved from disk once and then cached for the process — this is on the
+     * per-request serving path, so it must not read a file every time. The moment a *newer* APK shows up, an older
+     * overlay is deleted instead of being served (the package's payload has to win).
      */
     private JSONObject active() {
-        Integer cached = activeBuild;
-        if (cached != null) {
-            if (cached == 0) return null;
-            return new File(root, String.valueOf(cached)).isDirectory() ? readActive() : null;
-        }
+        if (activeBuild != null) return activeState;
         JSONObject state = readActive();
         int build = state == null ? 0 : state.optInt("build", 0);
         if (build > 0 && !new File(root, String.valueOf(build)).isDirectory()) {
@@ -340,6 +342,7 @@ public final class OverlayStore {
             state = null;
             build = 0;
         }
+        activeState = state;
         activeBuild = build;
         return state;
     }
@@ -371,6 +374,7 @@ public final class OverlayStore {
         File target = new File(root, ACTIVE);
         deleteTree(target);
         if (!temp.renameTo(target)) throw new IOException("无法写入更新状态");
+        activeState = state;
         activeBuild = build;
         activeFiles = null;
     }

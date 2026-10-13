@@ -208,6 +208,7 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 增量更新后页面还是旧代码 | WebView 有缓存，而 Capacitor 的本地服务器不设缓存头。`AppUpdatePlugin.reload()` 先 `webView.clearCache(true)` 再 `bridge.reload()`；只写 overlay 不重载，页面照旧跑内存里的旧代码 |
 | 以为改 `assets` 就能更新 | 应用改不了自己的 APK。增量一律落在 `filesDir/overlay/<build>/`，靠 `RouteProcessor`（WebView）+ `OverlayStaticSource`（局域网开服）叠在 APK 上面；`APK build >= overlay build` 时 overlay 会被丢弃，否则装了新 APK 还会跑到旧代码 |
 | 增量包里有文件删不掉 | overlay 是"层"，删不掉 APK 里的副本。所以**这一版有删除就不出增量包**（`package-release` 里判断 `diff.removed.length`），客户端走全量安装 |
+| 改了 Java 却发了增量包 | 增量包**只替换 payload**，改不了 APK 里的原生代码；只吃增量的客户端会"新前端 + 旧原生"。改过壳/Java 的版本用 `--no-delta` 明确走全量 |
 
 ## 7. 交付
 

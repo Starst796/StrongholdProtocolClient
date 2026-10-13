@@ -590,6 +590,7 @@ filesDir/overlay/<build>/payload.json   合并后的清单（APK 的清单 + 本
 | 本地版本号读不出来（`installedBuild()` = 0） | 走完整安装包 |
 | 增量包比 APK 还大 | 走完整安装包 |
 | 这一版**删除**了 payload 文件 | 打包时就不出增量包（overlay 无法从 APK 里"删"文件），客户端走全量 |
+| 这一版改了 **Java/壳代码** | 增量包只能替换 payload 文件，改不了原生代码。用 `node tools/package-release.mjs --no-delta` 明确不发增量包，让客户端走完整安装（否则拿到增量的客户端会"新文件 + 旧原生代码"） |
 | 下载 sha256 不符 / 解包时任一文件校验失败 / 包不完整 | 报错并**保持原样**（解包在 `<build>.staging` 里，只有全部通过才 rename 生效） |
 
 ### 16.3 发布与验证

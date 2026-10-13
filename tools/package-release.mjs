@@ -28,6 +28,9 @@
 //   --build <n>       build number to use (default: release.json + 1)
 //   --base-inventory <file>  inventory to diff this payload against (default: the newest build/inventories/payload-*.json
 //                     below this build; see tools/payload-inventory.mjs)
+//   --no-delta        publish no incremental pack: the client must take the full installer. Use it when *Java* changed
+//                     (the pack only replaces payload files — a shell change needs an install, so a delta would leave
+//                     the client running new files on old code)
 //   --notes <text>    release notes for the feed (default: 上游 <version>（<commit>）; this text is shown to players)
 //   --tag <tag>       release tag (default: v<version>-b<build>)
 //   --portable        desktop single-file .exe instead of the folder (slow first screen; see docs/PACKAGING.md §4)
@@ -221,7 +224,7 @@ export function parseReleaseArgs(argv) {
   const o = {
     game: undefined, server: undefined, feed: undefined, build: undefined, notes: undefined, tag: undefined,
     repo: undefined, baseInventory: undefined, portable: false, skipInstall: false,
-    zip: true, android: true, commit: true, test: true, release: false, quiet: false, help: false,
+    zip: true, android: true, commit: true, test: true, release: false, quiet: false, help: false, noDelta: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -236,6 +239,9 @@ export function parseReleaseArgs(argv) {
     else if (key === '--tag') o.tag = val();
     else if (key === '--repo') o.repo = val();
     else if (key === '--base-inventory') o.baseInventory = val();
+    // A payload pack cannot update the native shell. A release that changes Java (the host, the updater, the
+    // WebView plumbing) must be a full install, or a delta would leave the client running new files on old code.
+    else if (key === '--no-delta') o.noDelta = true;
     else if (key === '--portable') o.portable = true;
     else if (key === '--skip-install') o.skipInstall = true;
     else if (key === '--no-zip') o.zip = false;
@@ -411,7 +417,9 @@ export function writeInventoryArtifacts(o) {
   // behaviour as every release before this one.
   let delta = null;
   const deltaFile = path.join(o.dist, deltaFileName(baseInv?.build ?? 0, o.build));
-  if (!diff || !o.payloadRoot) {
+  if (o.noDelta) {
+    log('package-release: --no-delta —— 这一版不带增量包（客户端走全量安装）');
+  } else if (!diff || !o.payloadRoot) {
     log('package-release: 没有基准清单 —— 这一版不带增量包（客户端走全量安装）');
   } else if (!diff.uploadFiles) {
     log('package-release: 和上一版没有差异 —— 不需要增量包');
@@ -472,7 +480,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (o.help) {
     console.log('usage: node tools/package-release.mjs [--game <checkout>] [--server <addr>] [--feed <url>]');
     console.log('                                        [--build <n>] [--notes <text>] [--tag <tag>] [--repo <owner/name>]');
-    console.log('                                        [--base-inventory <payload-N.json>]');
+    console.log('                                        [--base-inventory <payload-N.json>] [--no-delta]');
     console.log('                                        [--portable] [--no-zip] [--skip-android] [--release]');
     console.log('                                        [--no-commit] [--no-test] [--skip-install]');
   } else {

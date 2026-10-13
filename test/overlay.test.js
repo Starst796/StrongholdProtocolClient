@@ -129,6 +129,23 @@ describe('the Android overlay', () => {
     assert.match(overlay, /implements StaticSource/);
     assert.match(overlay, /overlayFile\(rel\) \? overlay\.open\(rel\) : base\.open\(rel\)/, 'the overlay wins when it has the file');
   });
+
+  test('the hot path resolves the overlay once, not once per request', () => {
+    // Every served file asks the store whether the overlay has it. Re-reading active.json there would be a file read
+    // (and a JSON parse) per asset — and a visibility race against the update thread doing the writing.
+    assert.match(store, /private volatile Integer activeBuild/);
+    assert.match(store, /private volatile JSONObject activeState/);
+    assert.match(store, /private volatile Set<String> activeFiles/);
+    assert.match(store, /if \(activeBuild != null\) return activeState;/, 'the resolved state is cached');
+  });
+
+  test('a release that changes Java can withhold the pack explicitly', () => {
+    // The pack only replaces payload files, so a shell change has to be a full install — otherwise a client that
+    // took the delta would run the new payload on the old native code.
+    const src = fs.readFileSync(path.join(ROOT, 'tools', 'package-release.mjs'), 'utf8');
+    assert.match(src, /else if \(key === '--no-delta'\) o\.noDelta = true;/);
+    assert.match(src, /if \(o\.noDelta\) \{[\s\S]{0,160}这一版不带增量包/);
+  });
 });
 
 describe('when the picker offers the incremental pack', () => {
