@@ -1,5 +1,5 @@
 diff --git a/public/index.html b/public/index.html
-index 0e44c46..5b3164f 100644
+index 0e44c46..50efeb3 100644
 --- a/public/index.html
 +++ b/public/index.html
 @@ -46,9 +46,11 @@
@@ -15,12 +15,16 @@ index 0e44c46..5b3164f 100644
    </script>
    <link rel="modulepreload" href="/vendor/preact.module.js" />
    <link rel="modulepreload" href="/vendor/hooks.module.js" />
-@@ -100,6 +102,13 @@
+@@ -100,6 +102,17 @@
        if (/specifier|resolve|import|module/i.test(String(ev && ev.message))) window.__spBootFail('load');
      });
    </script>
 +  <!-- Packaged-client server address (empty in the web build → the page's own origin). Must run before /js/main.js. -->
 +  <script src="/js/runtime-config.js"></script>
++  <!-- Node globals for the in-page server (process / setImmediate). A CLASSIC script, so it runs before the
++       module scripts whose static imports need it — bootstrap.js imports the server modules, and one of them
++       reads process.env at import time, which would otherwise abort the whole offline boot. No-op in Node. -->
++  <script src="/offline/node-globals.js"></script>
 +  <!-- Phone-side LAN host (Android): a CLASSIC script, so window.__SP_HOST__ exists before any module script
 +       (the picker) runs — a module here would be deferred and could execute after it. No-op elsewhere. -->
 +  <script src="/offline/host-mobile.js"></script>

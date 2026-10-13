@@ -63,6 +63,8 @@ export function assertPatched(payloadRoot) {
   if (!net.includes('resolveServerTarget') || !net.includes('__SP_SERVER__')) throw new Error('payload js/net.js 没有被补丁改到（找不到 __SP_SERVER__ 支持）');
   if (!room.includes('toHttpUrl')) throw new Error('payload js/screens/room.js 没有被补丁改到（邀请链接仍是本地地址）');
   if (!html.includes('/js/runtime-config.js')) throw new Error('payload index.html 没有被补丁改到（缺少 runtime-config.js 的 <script>）');
+  // The Node-globals shim must load before the module scripts: bootstrap.js' static imports need `process` already.
+  if (!html.includes('/offline/node-globals.js')) throw new Error('payload index.html 没有被补丁改到（缺少 node-globals.js 的 <script>）');
   if (!html.includes('/js/shell/picker.js')) throw new Error('payload index.html 没有被补丁改到（缺少选择服务器页的 <script>）');
   if (!html.includes('/css/shell-display.css')) throw new Error('payload index.html 没有被补丁改到（缺少 shell-display.css 的 <link>）');
 }

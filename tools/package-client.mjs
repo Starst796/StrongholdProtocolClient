@@ -29,6 +29,7 @@ import {
   findGameRoot, readAppVersion, readProtocolVersion, verifyGameContract,
 } from './game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
+import { assertNoNodeGlobals } from './node-globals.mjs';
 import { CLIENT_ROOT, androidVersionCode, readRelease } from './release-meta.mjs';
 
 export { CLIENT_ROOT };
@@ -162,6 +163,10 @@ export function assembleClient(opts = {}) {
   // The in-page server (offline/bootstrap.js) imports the real game server code; mirror it for the offline layer.
   mirror(SERVER_MOUNT.src, SERVER_MOUNT.dst, MOUNT_KEEP.server);
   assertServerNeedsOnlyShims(out);
+  // ...and the other half of the same guard: the page imports these modules, so they must not touch a Node global
+  // the browser lacks. `assertServerNeedsOnlyShims` only sees `import` specifiers — 0.2.3's `process.env` in
+  // server/match/botEmotes.js sailed through it and broke every offline boot (see tools/node-globals.mjs).
+  assertNoNodeGlobals(out, { log });
 
   /** Write a generated file (only when its content changed, so mtimes stay stable across rebuilds). */
   const writeGenerated = (relDst, body) => {
@@ -326,6 +331,7 @@ export function shellSource(name) {
 
 /** Payload paths of the offline runtime layer — offline/<name>, copied verbatim (imported by the in-page server). */
 export const OFFLINE_FILES = [
+  ['node-globals.js', 'offline/node-globals.js'],
   ['node-crypto.js', 'offline/node-crypto.js'],
   ['node-net.js', 'offline/node-net.js'],
   ['data-provider.js', 'offline/data-provider.js'],
