@@ -193,7 +193,7 @@ Android 只会用新包**覆盖安装**与它**签名相同**的应用。本项�
 
 任何一条不满足就退回完整安装包：客户端不在基准版本上、增量包校验失败、这一版删过文件、包比安装包还大。桌面端不变（仍是"打开下载页"）。
 
-**当前状态**：第一个带 overlay 的已发布版本是 **build 6（0.2.5）**，它的 picker 还不解析 feed 的 `delta` 字段，所以 build 6 的客户端看不到增量包、必须装完整包；**第一次真正走增量要等 build 7**。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §16。
+**当前状态**：第一个带 overlay 的已发布版本是 **build 6（0.2.5）**，它的 picker 还不解析 feed 的 `delta` 字段，所以 build 6 的客户端看不到增量包、必须装完整包（给 build 7 打包时用 `--no-delta`，那份包没有客户端能用）；**build 8 起增量才真正生效**。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §16。
 
 ## 许可
 

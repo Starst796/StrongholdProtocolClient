@@ -213,7 +213,7 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 增量包里有文件删不掉 | overlay 是"层"，删不掉 APK 里的副本。所以**这一版有删除就不出增量包**（`package-release` 里判断 `diff.removed.length`），客户端走全量安装 |
 | 改了 Java 却发了增量包 | 增量包**只替换 payload**，改不了 APK 里的原生代码；只吃增量的客户端会"新前端 + 旧原生"。改过壳/Java 的版本用 `--no-delta` 明确走全量 |
 | feed 里加了字段（`payload` / `delta`）但客户端没反应 | 客户端只认 `parseLatestFeed()` 解析出来的 feed——**新增字段必须在那里解析**（`feedSideFile()`），否则 picker 拿到的对象上根本没有这个键，判断永远走"没有增量" |
-| 首次引入 overlay 的那一版拿不到增量 | 引入 overlay 的 APK 里是**旧 picker**（不解析 `delta`），所以那一次更新必须装完整包；下一版起才真正走增量 |
+| 首次引入 overlay 的那一版拿不到增量 | 引入 overlay 的 APK 里是**旧 picker**（不解析 `delta`），所以那一次更新必须装完整包；给那一版的后一版打包时加 `--no-delta`（包没人能用），再下一版才真正走增量 |
 
 ## 7. 交付
 

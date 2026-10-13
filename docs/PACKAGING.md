@@ -597,7 +597,7 @@ filesDir/overlay/<build>/payload.json   合并后的清单（APK 的清单 + 本
 | 增量包比 APK 还大 | 走完整安装包 |
 | 这一版**删除**了 payload 文件 | 打包时就不出增量包（overlay 无法从 APK 里"删"文件），客户端走全量 |
 | 这一版改了 **Java/壳代码** | 增量包只能替换 payload 文件，改不了原生代码。用 `node tools/package-release.mjs --no-delta` 明确不发增量包，让客户端走完整安装（否则拿到增量的客户端会"新文件 + 旧原生代码"） |
-| 客户端是已发布的 **build 6** | 它是第一个带 overlay 的版本，但那一版的 picker 还没解析 feed 的 `delta` 字段，所以看不到增量包，只能装完整包。**第一次真正走增量要等 build 7**（build 7 的 picker 会解析，且 build 7 起的客户端都带 overlay） |
+| 客户端是已发布的 **build 6** | 它是第一个带 overlay 的版本，但那一版的 picker 还没解析 feed 的 `delta` 字段，所以看不到增量包，只能装完整包。**打包 build 7 时用 `--no-delta`**（`delta-6-7.zip` 没有任何客户端能用），客户端装完整包升到 build 7；**build 8 起增量才真正生效**（build 7 的 picker 会解析 `delta`，而且 build 7 起的客户端都带 overlay） |
 | 下载 sha256 不符 / 解包时任一文件校验失败 / 包不完整 | 报错并**保持原样**（解包在 `<build>.staging` 里，只有全部通过才 rename 生效） |
 
 ### 16.3 发布与验证
