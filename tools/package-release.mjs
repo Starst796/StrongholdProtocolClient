@@ -11,7 +11,8 @@
 //      version from the game (0.1.3) and the build packed under it (build 12 → versionCode 1030012, which is what
 //      lets an installed app be updated in place; see tools/release-meta.mjs);
 //   3. builds the desktop client (folder form) + a zip of it, and the Android debug APK;
-//   4. copies the artifacts into build/dist/, writes the update feed there (latest.json) and remembers the build
+//   4. copies the artifacts into build/dist/, writes the update feed there (latest.json), the payload 清单
+//      (payload-<build>.json) and a 体积报告 (build/reports/report-<build>.md), and remembers the build
 //      number in release.json;
 //   5. commits the aligned version + the new build number in this repo.
 //
@@ -25,6 +26,8 @@
 //   --server <addr>   server the payload connects to (default: client.config.json / localhost:3000)
 //   --feed <url>      update feed baked into the payload (default: client.config.json update.feed; '' = no check)
 //   --build <n>       build number to use (default: release.json + 1)
+//   --base-inventory <file>  inventory to diff this payload against (default: the newest build/inventories/payload-*.json
+//                     below this build; see tools/payload-inventory.mjs)
 //   --notes <text>    release notes for the feed (default: 上游 <version>（<commit>）; this text is shown to players)
 //   --tag <tag>       release tag (default: v<version>-b<build>)
 //   --portable        desktop single-file .exe instead of the folder (slow first screen; see docs/PACKAGING.md §4)
@@ -42,6 +45,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, loadConfig } from './package-client.mjs';
+import { INVENTORY_FILE, buildInventory, diffInventory, findBaseInventory, human, inventoryReport, readInventory, writeInventory } from './payload-inventory.mjs';
 import { androidVersionCode, buildLatestFeed, nextBuild, readRelease, releaseTag, sha256File, versionCode, writeRelease } from './release-meta.mjs';
 import { findGameRoot, readAppVersion, readProtocolVersion } from './game-contract.mjs';
 import { buildDesktop } from './package-desktop.mjs';
@@ -233,7 +237,7 @@ function commitRelease({ version, build, protocol, artifacts, log }) {
 export function parseReleaseArgs(argv) {
   const o = {
     game: undefined, server: undefined, feed: undefined, build: undefined, notes: undefined, tag: undefined,
-    repo: undefined, portable: false, skipInstall: false,
+    repo: undefined, baseInventory: undefined, portable: false, skipInstall: false,
     zip: true, android: true, commit: true, test: true, release: false, quiet: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -248,6 +252,7 @@ export function parseReleaseArgs(argv) {
     else if (key === '--notes') o.notes = val();
     else if (key === '--tag') o.tag = val();
     else if (key === '--repo') o.repo = val();
+    else if (key === '--base-inventory') o.baseInventory = val();
     else if (key === '--portable') o.portable = true;
     else if (key === '--skip-install') o.skipInstall = true;
     else if (key === '--no-zip') o.zip = false;
@@ -325,6 +330,13 @@ export function release(o = {}) {
   // build these artifacts are, and the next release counts up from here.
   writeRelease(build);
 
+  // 清单 + 体积报告 (docs/PACKAGING.md §15) — see writeInventoryArtifacts().
+  const inv = writeInventoryArtifacts({
+    inventory: built.inventory, payloadRoot: built.out, version, build,
+    dist, baseInventory: o.baseInventory, log,
+  });
+  artifacts.push(inv.distFile);
+
   const repo = String(o.repo ?? config.update?.repo ?? '').trim();
   const tag = String(o.tag ?? '').trim() || releaseTag(version, build);
   let feed = null;
@@ -344,6 +356,8 @@ export function release(o = {}) {
     feed = buildLatestFeed({
       version, build, protocol, tag, repo, notes, assets,
       gameCommit: built.game?.commit ? String(built.game.commit) : null,
+      payload: { ...assetEntry(inv.distFile), files: inv.inventory.totals.files, bytes: inv.inventory.totals.bytes, schema: inv.inventory.schema },
+      baseBuild: inv.base?.build ?? null,
     });
     const feedPath = path.join(dist, 'latest.json');
     fs.writeFileSync(feedPath, JSON.stringify(feed, null, 2) + '\n');
@@ -367,6 +381,61 @@ export function release(o = {}) {
   return { version, protocol, build, tag, gameRoot, changed, artifacts, android, feed, commit };
 }
 
+/**
+ * 清单 + 体积报告 (docs/PACKAGING.md §15).
+ *
+ * The payload carries its own inventory (assembleClient writes `payload.json`); this keeps per-build copies so a
+ * later release can diff against them, publishes the same bytes into build/dist for the release asset, and prints
+ * what an incremental update would cost. The dist copy is what an updating client downloads *and* saves as its own
+ * new 清单, so the two must be byte-identical — checked below.
+ *
+ * @param {{ inventory?: object|null, payloadRoot?: string, version: string, build: number, dist: string,
+ *   baseInventory?: string, log?: (...a: any[]) => void }} o
+ * @returns {{ inventory: object, file: string, distFile: string, base: object|null, diff: object|null, reportFile: string }}
+ */
+export function writeInventoryArtifacts(o) {
+  const log = o.log ?? (() => {});
+  const invDir = path.join(CLIENT_ROOT, 'build', 'inventories');
+  const file = path.join(invDir, `payload-${o.build}.json`);
+  // assembleClient hands its inventory over (it has just hashed the tree); otherwise reuse the copy the payload
+  // carries — re-hashing 670 MB to learn what is already written down is pure waste.
+  const inPayload = o.payloadRoot ? path.join(o.payloadRoot, INVENTORY_FILE) : '';
+  const inv = o.inventory
+    ?? (inPayload && fs.existsSync(inPayload) ? readInventory(inPayload) : buildInventory(o.payloadRoot, { version: o.version, build: o.build, log }));
+  writeInventory(file, inv);
+
+  // The copy clients fetch, under a name that says which build it is (GitHub assets are a flat namespace).
+  const distFile = path.join(o.dist, `payload-${o.build}.json`);
+  fs.mkdirSync(o.dist, { recursive: true });
+  fs.copyFileSync(file, distFile);
+  // An updating client saves this download as its own 清单, so it must be exactly what the payload carries; if the
+  // two ever disagree the client's file list contradicts the release's, and the next update either re-downloads
+  // everything or — worse — skips a file it does not actually have.
+  if (inPayload && fs.existsSync(inPayload) && fs.readFileSync(inPayload, 'utf8') !== fs.readFileSync(distFile, 'utf8')) {
+    throw new Error(`${INVENTORY_FILE} 与 build/dist/payload-${o.build}.json 不一致 —— 清单和 payload 必须是同一次生成（重新打包）`);
+  }
+
+  const base = o.baseInventory ? { file: path.resolve(o.baseInventory) } : findBaseInventory(invDir, o.build);
+  const baseInv = base ? readInventory(base.file) : null;
+  const diff = baseInv ? diffInventory(baseInv, inv) : null;
+  const reportFile = path.join(CLIENT_ROOT, 'build', 'reports', `report-${o.build}.md`);
+  fs.mkdirSync(path.dirname(reportFile), { recursive: true });
+  fs.writeFileSync(reportFile, inventoryReport({
+    inv, diff, baseBuild: baseInv?.build ?? null, baseVersion: baseInv?.version ?? null,
+  }));
+  log(`package-release: 清单 → ${path.relative(CLIENT_ROOT, file).split(path.sep).join('/')}`
+    + `（${inv.totals.files} 个文件, ${human(inv.totals.bytes)}，同时作为发布产物 payload-${o.build}.json）`);
+  const rel = path.relative(CLIENT_ROOT, reportFile).split(path.sep).join('/');
+  if (diff) {
+    log(`package-release: 体积报告 → ${rel}`
+      + `（相对 build ${baseInv.build}：新增 ${diff.added.length} / 修改 ${diff.changed.length} / 删除 ${diff.removed.length}，`
+      + `增量需传输 ${human(diff.upload)}，是全量的 ${((diff.upload / diff.total) * 100).toFixed(1)}%）`);
+  } else {
+    log(`package-release: 体积报告 → ${rel}（没有基准清单，只报全量）`);
+  }
+  return { inventory: inv, file, distFile, base: baseInv, diff, reportFile };
+}
+
 /** `{name, sha256, size}` for one artifact — the shape buildLatestFeed() publishes. Null when there is no artifact. */
 function assetEntry(file) {
   if (!file || !fs.existsSync(file)) return null;
@@ -379,6 +448,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (o.help) {
     console.log('usage: node tools/package-release.mjs [--game <checkout>] [--server <addr>] [--feed <url>]');
     console.log('                                        [--build <n>] [--notes <text>] [--tag <tag>] [--repo <owner/name>]');
+    console.log('                                        [--base-inventory <payload-N.json>]');
     console.log('                                        [--portable] [--no-zip] [--skip-android] [--release]');
     console.log('                                        [--no-commit] [--no-test] [--skip-install]');
   } else {

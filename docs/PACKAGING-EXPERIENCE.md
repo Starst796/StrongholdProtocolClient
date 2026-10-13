@@ -14,7 +14,7 @@
 | `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | ~818 MB，exe 本身 234.3 MB | **默认形态**，双击到首屏 ~0.3 s |
 | `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | ~253 MB | 单文件，首屏 **~24 s**（每次启动都把整个应用解到 `%TEMP%`） |
 | `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | ~228 MB | debug 包；`--release` 出未签名的 release |
-| `npm test` | —— | 173 用例 | `packaging/picker/update/signing/publish/status/host`；没有游戏 checkout 时自动 skip |
+| `npm test` | —— | 202 用例 | `packaging/picker/update/signing/publish/inventory/status/host`；没有游戏 checkout 时自动 skip |
 
 默认连 `localhost:3000`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
 **本打包仓库**（`Stronghold-Protocol-Client`）／**服务器启动器**（`Stronghold-Protocol-Server-Launcher`，另一件事）。
@@ -200,6 +200,10 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 几百 MB 传一半断了 | GitHub 的 release 附件**不支持断点续传**，只能整份重传：`publish-release.mjs` 默认重试 3 次、4xx 不重试、低于 10 KB/s 持续 2 分钟即中断转重试。**直接重复执行该命令即可**，同名附件先删后传，不会重复 |
 | 想让"有新版本"提示不出现 | 保证 `releases/latest` 指向的那个 release 里的 `latest.json` 的 `build` ≤ 客户端的 `client.build`；或者干脆别发（没 feed 就没提示）。**注意**：别名会被最近一次正式发布抢走，所以别往这个仓库发无关 release |
 | 给 `publish()` 写集成测试时整个测试挂死 | `publish()` **从头到尾是同步的**（`spawnSync` + curl），在同一个进程里跑它会把事件循环占满——而假 API 服务器就在那个循环里，于是 curl 永远等不到响应。假服务器必须在**别的进程**，或者把 `publish()` 放到子进程里跑（`test/publish.test.js` 用后者）。同理：`req.resume()` 必须在挂 `data` 监听**之后**，否则请求体已被 flowing 模式吃掉、`end` 永远不触发 |
+| 清单 `payload.json` 每次重打都被删掉一次（`removed` 多 1） | 它由 `assembleClient` **最后**生成（内容依赖其余所有文件），但 `sweep()` 只保留 `expected` 里的文件。所以要在 `sweep()` **之前**先把 `payload.json` 放进 `expected`，否则每轮都"删了再写" |
+| 手工算清单时报"清单和 payload 不是同一次生成" | `package.json` 的版本号是 `package-release` **开始构建前**才对齐到游戏版本的：直接拿游戏仓库的 `APP_VERSION` 去算当前 payload 的清单，版本字段就对不上（`payload.json` 记的是 `build.json` 里 `client.version`）。手工调用时读 `build/client/www/build.json` 的 `client`，或者干脆不传 inventory（`writeInventoryArtifacts` 会读 payload 里那一份，省一次 670 MB 哈希） |
+| 新 clone 里 `build/inventories/` 是空的，做不了增量基准 | `build/` 不进版本库。从**上一版已发布的桌面 zip** 重建基准：`node tools/payload-inventory.mjs --from-zip build/dist/StrongholdProtocol-0.2.4-win-x64.zip`（payload 在 zip 内 `win-unpacked/resources/www/`，版本/build 号从包内 `build.json` 读），或用 `--base-inventory` 指到别处 |
+| 差集把基准选成了自己或更新的 build | `findBaseInventory()` 只认**小于**当前 build 的最新一份；改 build 号重打时别把新清单留在 `build/inventories/` 里当基准 |
 
 ## 7. 交付
 

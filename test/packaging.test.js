@@ -23,6 +23,7 @@ import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payloa
 import { buildPatch, applyHooks } from '../tools/regen-patch.mjs';
 import { assembleClient, assertArtComplete, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, OFFLINE_FILES, assertServerNeedsOnlyShims, parseCommonArgs } from '../tools/package-client.mjs';
 import { androidVersionCode, readRelease } from '../tools/release-meta.mjs';
+import { INVENTORY_FILE, INVENTORY_SCHEMA, walkFiles } from '../tools/payload-inventory.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -441,6 +442,25 @@ describe('client payload assembly', () => {
     const third = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {} });
     assert.equal(third.removed, 1);
     assert.ok(!existsSync(stale));
+  });
+
+  test('ships its own 清单, which matches the tree it just wrote', () => {
+    // The inventory ships inside the payload so an installed client knows what it holds without hashing 670 MB on a
+    // phone; the packager publishes the same bytes as build/dist/payload-<build>.json. It must describe the payload
+    // exactly — a stale or partial list is what would make the in-app updater fetch the wrong files.
+    const out = path.join(game.root, 'build', 'client', 'www');
+    const inv = JSON.parse(readFileSync(path.join(out, INVENTORY_FILE), 'utf8'));
+    assert.equal(inv.schema, INVENTORY_SCHEMA);
+    assert.equal(inv.build, readRelease().build);
+    assert.equal(inv.version, JSON.parse(readFileSync(path.join(CLIENT_ROOT, 'package.json'), 'utf8')).version);
+    assert.deepEqual(Object.keys(inv.files).sort(), walkFiles(out).filter((f) => f !== INVENTORY_FILE));
+    assert.equal(inv.totals.files, Object.keys(inv.files).length);
+    assert.ok(!(INVENTORY_FILE in inv.files), 'a file cannot carry its own hash');
+    // rebuilding an unchanged payload leaves the 清单 byte-identical, which is what makes two builds comparable
+    const before = readFileSync(path.join(out, INVENTORY_FILE), 'utf8');
+    const again = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {} });
+    assert.equal(again.copied, 0, 'and rewrites nothing');
+    assert.equal(readFileSync(path.join(out, INVENTORY_FILE), 'utf8'), before);
   });
 
   test('a custom --server address is what the payload connects to', () => {

@@ -514,3 +514,46 @@ desktop\node_modules\electron\dist\electron.exe . --remote-debugging-port=9222
 ```
 
 `--build 0` 的 feed 必须被拒绝（比本机旧），`--empty` 的 feed 必须静默——这两条也在 `test/update.test.js` 里。
+
+## 15. payload 清单与体积报告（`tools/payload-inventory.mjs`）
+
+每次打包都会给 payload 生成一份**清单**：每个文件的大小 + sha256。它有两个去处，内容完全一致：
+
+| 位置 | 谁用 |
+|---|---|
+| payload 内 `payload.json`（`build/client/www/payload.json`） | 装好的客户端用它知道「我手上是哪些文件」。手机上重新哈希 670 MB 不现实，所以随包发一份 |
+| `build/dist/payload-<build>.json`（同一字节，作为发布产物） | 打包机用它和下一版做差集；客户端更新时下载它，既当"目标清单"，又直接存成自己新的 `payload.json` |
+
+清单**不含自己**（文件装不下自己的哈希），两边一致地排除，所以差集不受影响。路径一律 `/`、排序，同一棵树两次生成的清单是逐字节相同的文件。
+
+每次 `tools/package-release.mjs` 结束时同时写出**体积报告** `build/reports/report-<build>.md`：
+
+```
+全量：13524 个文件，670.9 MB
+相对 0.2.4 (build 5)：新增 1684 / 修改 140 / 删除 0，需传输 85.0 MB（1824 个文件，占全量 12.7%）
+未变：11700 个文件，585.9 MB（增量更新可以完全跳过）
+```
+
+外加顶层目录的体积分布（`assets` 94.3%）、变更分布、以及最大的 15 个新增/修改文件。这份数据就是判断"增量更新值不值得做、要下多少"的依据——0.2.4 → 0.2.5 是 **85.0 MB vs 670.9 MB（12.7%）**，且几乎全是新增素材（`assets/local/**`）。
+
+基准清单从 `build/inventories/payload-<build>.json` 里自动挑（取 **小于** 当前 build 的最新一个）；没有就只报全量，不会编一个 0。`build/` 不进版本库，新 clone（或第一次做清单的版本）可以从已发布的桌面 zip 里重建基准：
+
+```bash
+# 0.2.4 的 payload 在 zip 里的 win-unpacked/resources/www/
+node tools/payload-inventory.mjs --from-zip build/dist/StrongholdProtocol-0.2.4-win-x64.zip
+# → build/inventories/payload-5.json（版本号/build 号从包内 build.json 读）
+```
+
+需要指定别的基准：`node tools/package-release.mjs --base-inventory <payload-N.json>`。
+
+feed（`latest.json`）里多一个 `payload` 字段（schema 仍是 1，老客户端忽略未知键即可）：
+
+```json
+"payload": { "name": "payload-6.json", "url": "…", "sha256": "…", "size": 1310720,
+             "files": 13524, "bytes": 703000000, "schema": 1, "base": 5 }
+```
+
+`base` 是本版做差集的基准 build：客户端据此判断"能不能走增量"（装的就是 base 才走）。发布时清单和安装包一起上传（`tools/publish-release.mjs` 现在按 feed 里出现过的每个产物上传，最后才传 `latest.json`）；清单缺失会让发布**直接失败**，不会发出一个指向 404 的 feed。
+
+清单与 payload 必须是**同一次生成**：`writeInventoryArtifacts()` 会逐字节比对 payload 内的 `payload.json` 与 `build/dist/payload-<build>.json`，不一致就报错（改过 payload 或版本号没对齐时最容易踩到）。
+

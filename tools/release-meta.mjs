@@ -120,6 +120,8 @@ export function sha256File(file, chunk = 1 << 20) {
  *   version: string, build: number, protocol?: number|null, gameCommit?: string|null, notes?: string,
  *   tag: string, repo: string, publishedAt?: string,
  *   assets?: { win?: {name: string, sha256: string, size: number}, android?: {name: string, sha256: string, size: number} },
+ *   payload?: {name: string, sha256: string, size: number, files: number, bytes: number, schema?: number},
+ *   baseBuild?: number|null,
  * }} input
  */
 export function buildLatestFeed(input) {
@@ -138,6 +140,15 @@ export function buildLatestFeed(input) {
   for (const [platform, a] of Object.entries(assets)) {
     if (!a) continue;
     feed[platform] = { name: a.name, url: assetUrl(repo, tag, a.name), sha256: a.sha256, size: a.size };
+  }
+  // The payload 清单 (tools/payload-inventory.mjs): the file list of this build, published beside the installers. An
+  // installed client fetches it to see what it is missing and which of its files are stale; `base` is the build the
+  // packager computed a delta against, so a client can tell whether the cheap path is open to it at all. Optional:
+  // a release without it is simply a full-install release (and older clients ignore the key).
+  if (input.payload) {
+    const p = input.payload;
+    feed.payload = { name: p.name, url: assetUrl(repo, tag, p.name), sha256: p.sha256, size: p.size, files: p.files, bytes: p.bytes, schema: p.schema ?? null };
+    if (input.baseBuild != null) feed.payload.base = input.baseBuild;
   }
   return feed;
 }

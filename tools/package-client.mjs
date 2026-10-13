@@ -30,6 +30,7 @@ import {
 } from './game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
 import { assertNoNodeGlobals } from './node-globals.mjs';
+import { INVENTORY_FILE, buildInventory, writeInventory } from './payload-inventory.mjs';
 import { CLIENT_ROOT, androidVersionCode, readRelease } from './release-meta.mjs';
 
 export { CLIENT_ROOT };
@@ -99,7 +100,7 @@ export function gameInfo(gameRoot) {
  *   gameRoot?: string, server?: string, out?: string, patchFile?: string, skipPatches?: boolean, offline?: boolean,
  *   log?: (...a: any[]) => void, warn?: (...a: any[]) => void,
  * }} [opts]
- * @returns {{ out: string, gameRoot: string, server: string, game: object, files: number, bytes: number, copied: number, removed: number, patched: object[], missingAssets: boolean, missingArtManifest: boolean }}
+ * @returns {{ out: string, gameRoot: string, server: string, game: object, files: number, bytes: number, copied: number, removed: number, patched: object[], missingAssets: boolean, missingArtManifest: boolean, inventory: object|null }}
  */
 export function assembleClient(opts = {}) {
   const log = opts.log ?? console.log;
@@ -122,6 +123,8 @@ export function assembleClient(opts = {}) {
   fs.mkdirSync(out, { recursive: true });
   const expected = new Set();
   let copied = 0;
+  /** The payload inventory written at the end (`null` when opts.skipInventory). */
+  let inventory = null;
   // Files the payload does not mirror but *derives*: the generated ones (shim, server address, provenance) and the
   // patched ones (see tools/payload-patches.mjs). Skipping them here keeps the patch from stacking on itself.
   const DERIVED = new Set(['data.js', 'server/data.js', 'js/runtime-config.js', 'build.json', PACK_INDEX_FILE, ...PATCHED_FILES]);
@@ -228,7 +231,23 @@ export function assembleClient(opts = {}) {
       removed++;
     }
   };
+  // The 清单 (inventory) is regenerated at the very end — its content depends on every other file, so it cannot be
+  // hashed earlier. It must still be in `expected` *before* the sweep, or the sweep deletes it (and counts it as
+  // removed) on every rebuild.
+  expected.add(path.resolve(out, INVENTORY_FILE));
   sweep(out);
+
+  // 清单: the payload's own inventory (path → size + sha256), written once everything else is final. It ships inside
+  // the payload so an installed client knows what it holds without hashing 670 MB on a phone, and the packager
+  // publishes the very same bytes as build/dist/payload-<build>.json — which is what a later build diffs against and
+  // what an updating client saves as its new inventory. `payload.json` cannot list itself, so it is excluded on both
+  // sides (see tools/payload-inventory.mjs). `skipInventory` is for the byte-for-byte comparisons in the tests.
+  if (!opts.skipInventory) {
+    inventory = buildInventory(out, { version: client.version, build: client.build });
+    writeInventory(path.join(out, INVENTORY_FILE), inventory);
+  } else {
+    fs.rmSync(path.join(out, INVENTORY_FILE), { force: true });
+  }
 
   // Count what actually landed in the payload (mirrored + generated files).
   let files = 0;
@@ -257,7 +276,7 @@ export function assembleClient(opts = {}) {
 
   const commit = game.commit ? game.commit.slice(0, 8) : '(no git)';
   log(`package-client: ${path.relative(CLIENT_ROOT, out) || out} —— ${files} 个文件, ${(bytes / 1048576).toFixed(1)} MB, 服务器 ${server}, 游戏 ${game.describe || game.app || '?'} (${commit}${game.dirty ? ', dirty' : ''}), 客户端 build ${client.build}, 补丁 ${patched.length} 文件 (${copied} written, ${removed} removed)`);
-  return { out, gameRoot, server, game, client, feed, files, bytes, copied, removed, patched, missingAssets, missingArtManifest };
+  return { out, gameRoot, server, game, client, feed, files, bytes, copied, removed, patched, missingAssets, missingArtManifest, inventory };
 }
 
 /**

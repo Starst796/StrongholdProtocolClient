@@ -294,6 +294,56 @@ describe('publish() against a fake GitHub API', () => {
     });
   }
 
+  test('uploads every asset the feed names — the 清单 included, and one day the delta pack', async () => {
+    // The upload list is derived from the feed, not hard-coded to win/android: the 清单 (tools/payload-inventory.mjs)
+    // is a release asset too, and a future delta pack will be one. If it were dropped, a client would be told there
+    // is an update and then 404 on the file that describes it.
+    const dist = makeDist();
+    const manifest = `payload-${dist.feed.build}.json`;
+    const delta = `delta-${dist.feed.build - 1}-${dist.feed.build}.zip`;
+    fs.writeFileSync(path.join(dist.dir, manifest), JSON.stringify({ schema: 1, files: {} }));
+    fs.writeFileSync(path.join(dist.dir, delta), Buffer.alloc(1024, 3));
+    dist.feed.payload = {
+      name: manifest, url: `https://example/${manifest}`, sha256: 'c'.repeat(64),
+      size: fs.statSync(path.join(dist.dir, manifest)).size, files: 0, bytes: 0, schema: 1, base: dist.feed.build - 1,
+    };
+    dist.feed.delta = { name: delta, url: `https://example/${delta}`, sha256: 'd'.repeat(64), size: 1024 };
+    fs.writeFileSync(path.join(dist.dir, 'latest.json'), JSON.stringify(dist.feed, null, 2) + '\n');
+    const api = await fakeApi();
+    try {
+      const run = await runPublish({
+        dist: dist.dir, repo: 'o/n', token: 'fake', attempts: 1, quiet: true,
+        api: `http://127.0.0.1:${api.port}`, uploads: `http://127.0.0.1:${api.port}`,
+      });
+      assert.equal(run.status, 0, `publish must succeed:\n${run.out}\n${run.err}`);
+      // installers first, then the small files, and the feed last of all
+      assert.deepEqual(api.seen.uploads.map((u) => u.name), [dist.win, dist.android, manifest, delta, 'latest.json']);
+    } finally {
+      await api.close();
+      fs.rmSync(dist.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses to publish a feed whose 清单 is missing from dist/', async () => {
+    // Same refusal as a missing installer: a feed and the files it points at are published together or not at all.
+    const dist = makeDist();
+    dist.feed.payload = { name: 'payload-7.json', url: 'https://example/payload-7.json', sha256: 'c'.repeat(64), size: 123, files: 0, bytes: 0 };
+    fs.writeFileSync(path.join(dist.dir, 'latest.json'), JSON.stringify(dist.feed, null, 2) + '\n');
+    const api = await fakeApi();
+    try {
+      const run = await runPublish({
+        dist: dist.dir, repo: 'o/n', token: 'fake', attempts: 1, quiet: true,
+        api: `http://127.0.0.1:${api.port}`, uploads: `http://127.0.0.1:${api.port}`,
+      });
+      assert.equal(run.status, 1);
+      assert.match(run.out, /payload-7\.json 里 —— 重新打包再发|payload-7\.json 但它不在|payload-7\.json/);
+      assert.deepEqual(api.seen.uploads, [], 'nothing is uploaded');
+    } finally {
+      await api.close();
+      fs.rmSync(dist.dir, { recursive: true, force: true });
+    }
+  });
+
   test('refuses to publish an APK signed by another key', async () => {
     // The gate that matters for players: an APK from another machine cannot update an installed one, so uploading
     // it would hand every phone a "signature does not match" error and force an uninstall.

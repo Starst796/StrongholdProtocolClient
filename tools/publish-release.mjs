@@ -220,21 +220,23 @@ export function publish(o = {}) {
 
   // Everything the feed points at must be uploaded next to it, or the client would download a 404.
   // The feed itself is uploaded LAST (see below): until then, `releases/latest` must not offer a download that 404s.
+  // `win`/`android` are the installers; `payload` is the 清单 (tools/payload-inventory.mjs) and `delta` the
+  // incremental pack the in-app updater reads. Any future feed entry shaped `{name, size}` is uploaded the same way,
+  // so a new artifact cannot be published by accident without its file.
   const uploads = [];
-  for (const platform of ['win', 'android']) {
-    const asset = feed[platform];
-    if (!asset?.name) continue; // the feed has no artifact for this platform (e.g. an Android-only release)
+  for (const [key, asset] of Object.entries(feed)) {
+    if (!asset || typeof asset !== 'object' || !asset.name || typeof asset.size !== 'number') continue;
     const file = path.join(dist, asset.name);
     if (!fs.existsSync(file)) {
       // Skipping it would publish a feed advertising a file that was never uploaded — the exact "有新版本 → 404"
       // this tool exists to prevent. A feed and its artifacts are published together or not at all.
-      throw new Error(`latest.json 指向 ${asset.name}，但它不在 ${path.relative(CLIENT_ROOT, dist)} 里 —— 重新打包再发`);
+      throw new Error(`latest.json 的 ${key} 指向 ${asset.name}，但它不在 ${path.relative(CLIENT_ROOT, dist)} 里 —— 重新打包再发`);
     }
     const size = fs.statSync(file).size;
     if (size !== asset.size) throw new Error(`${asset.name} 与 latest.json 不一致（${size} ≠ ${asset.size}）—— 重新打包再发`);
     // Last gate before the world sees it: an APK signed by another key cannot update an installed one, so the
     // player would be told "签名不一致" and have to uninstall (losing their save). See tools/android-signing.mjs.
-    if (platform === 'android') {
+    if (key === 'android') {
       const signer = signerCheck(file, { expected: expectedSigner(config) });
       if (signer.ok === false) throw new Error(`${asset.name} 无法发布：\n${signer.reason}`);
       if (signer.ok === null) log(`publish-release: 注意 —— 没有核对 ${asset.name} 的签名（${signer.reason}）`);
@@ -242,7 +244,9 @@ export function publish(o = {}) {
     }
     uploads.push({ name: asset.name, file });
   }
-  if (!uploads.length) throw new Error('latest.json 没有任何可下载的产物（win / android 都缺）—— 检查打包结果');
+  if (!uploads.some((u) => u.name === feed.win?.name || u.name === feed.android?.name)) {
+    throw new Error('latest.json 没有任何可下载的产物（win / android 都缺）—— 检查打包结果');
+  }
   uploads.push({ name: 'latest.json', file: feedFile });
 
   log(`publish-release: ${repo} ← tag ${tag}`);

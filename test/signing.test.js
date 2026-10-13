@@ -196,6 +196,9 @@ describe('the guard is wired into both halves of a release', () => {
     const src = read('tools/publish-release.mjs');
     assert.match(src, /signerCheck\(file, \{ expected: expectedSigner\(config\) \}\)/);
     assert.match(src, /signerCheck = o\.signerCheck \?\? verifyApkSigner/, 'the real check is the default (only tests replace it)');
-    assert.match(src, /platform === 'android'/, 'the check is on the APK, the platform that must update in place');
+    assert.match(src, /key === 'android'/, 'the check is on the APK, the platform that must update in place');
+    // The upload list is derived from the feed itself, so a feed entry a future release adds (the 清单, the delta
+    // pack) cannot be published without its file — a hard-coded win/android loop would silently drop it.
+    assert.match(src, /for \(const \[key, asset\] of Object\.entries\(feed\)\)/, 'every feed asset is uploaded');
   });
 });

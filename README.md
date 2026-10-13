@@ -43,7 +43,8 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程。`android/app/src/main/java/site/starst/stronghold/host/` 是「创建服务器」的原生侧（`MiniHostServer.java` 单端口静态托管 + WebSocket、`AssetStaticSource.java` 直接读 APK 资源、`HostServerPlugin.java` Capacitor 桥） |
 | `client.config.json` | `gameRoot`、`defaultServer` |
-| `tools/package-release.mjs` | 一键发布驱动：读上游 `APP_VERSION` → 对齐本仓库版本号 → 跑测试 → 打桌面 + APK → 复制到 `build/dist/` → `git commit`（入口 `package.bat` / `package.sh`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §13） |
+| `tools/payload-inventory.mjs` | payload 清单（每文件 size + sha256）：随包发 `payload.json`、发布成 `payload-<build>.json`，并和上一版清单算差集 / 出体积报告（见 [docs/PACKAGING.md](docs/PACKAGING.md) §15） |
+| `tools/package-release.mjs` | 一键发布驱动：读上游 `APP_VERSION` → 对齐本仓库版本号 → 跑测试 → 打桌面 + APK → 清单 + 体积报告 → 复制到 `build/dist/` → `git commit`（入口 `package.bat` / `package.sh`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §13） |
 | `tools/server-status.mjs` | 查服务器忙不忙（`/healthz`）：单次采样、滚动观察、`--under N` 等空窗（见 §11） |
 | `test/` | `packaging.test.js`（补丁/契约/摊平/增量）、`picker.test.js`（选择页规则）、`host.test.js`（桌面版开服端到端）、`host-mobile.test.js`（Android 原生桥端到端）、`status.test.js`、`trust.test.js` |
 
@@ -175,6 +176,10 @@ Android 只会用新包**覆盖安装**与它**签名相同**的应用。本项�
 存档（续连 token、干员调配、设置）存在应用私有数据里，**只有卸载才会清空**——覆盖安装不会。所以：不要用"卸载再装"来解决别的问题。
 
 发布方的步骤（生成 feed → 上传 GitHub Releases）见 [docs/PACKAGING.md](docs/PACKAGING.md) §14。
+
+## payload 清单与体积报告
+
+每份 payload 都带一份**清单** `payload.json`（每个文件的大小 + sha256），同一份内容也会作为 `payload-<build>.json` 一起发布——给"增量更新"用（客户端据此知道自己缺哪些文件），每次打包还会写出 `build/reports/report-<build>.md`：全量体积、目录分布，以及相对上一版的差集。例如 0.2.4 → 0.2.5 是 **85.0 MB / 670.9 MB（12.7%）**，其中 78.8 MB 是新素材。详见 [docs/PACKAGING.md](docs/PACKAGING.md) §15。
 
 ## 许可
 
