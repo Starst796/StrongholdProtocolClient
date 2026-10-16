@@ -153,27 +153,25 @@ describe('the Android overlay', () => {
   });
 
   test('--no-delta really writes no pack, and clears a stale one', () => {
-    // Behaviour, not source text: this is what a release does.
+    // Behaviour, not source text: this is what a release does. Everything happens in a temp directory — the real
+    // build/inventories is the *diff base* for the next release, and a test has no business deleting from it.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-nodelta-'));
     try {
       const payload = path.join(dir, 'payload');
+      const invDir = path.join(dir, 'inventories');
       fs.mkdirSync(payload, { recursive: true });
+      fs.mkdirSync(invDir, { recursive: true });
       fs.writeFileSync(path.join(payload, 'a.js'), 'a');
-      const invDir = path.join(ROOT, 'build', 'inventories');
       const deltaFile = path.join(dir, 'delta-6-7.zip');
       fs.writeFileSync(deltaFile, 'stale pack from an earlier run');
       const inv = buildInventory(payload, { version: '0.3.0', build: 7 });
       // A base 清单 one build below, so a diff (and therefore a pack) would be possible.
       writeInventory(path.join(invDir, 'payload-6.json'), { ...inv, build: 6, files: { ...inv.files, 'old.js': [3, 'b'.repeat(64)] } });
-      try {
-        const r = writeInventoryArtifacts({ inventory: inv, payloadRoot: payload, version: '0.3.0', build: 7, dist: dir, noDelta: true, log: () => {} });
-        assert.equal(r.delta, null, 'no pack');
-        assert.ok(!fs.existsSync(deltaFile), 'and a stale pack from an earlier run of this build is gone');
-        assert.match(fs.readFileSync(r.reportFile, 'utf8'), /增量包：\*\*未生成\*\*（打包时指定了 --no-delta）/, 'the report says why');
-      } finally {
-        fs.rmSync(path.join(invDir, 'payload-6.json'), { force: true });
-        fs.rmSync(path.join(invDir, 'payload-7.json'), { force: true });
-      }
+      const r = writeInventoryArtifacts({ inventory: inv, payloadRoot: payload, version: '0.3.0', build: 7, dist: dir, invDir, noDelta: true, log: () => {} });
+      assert.equal(r.delta, null, 'no pack');
+      assert.ok(!fs.existsSync(deltaFile), 'and a stale pack from an earlier run of this build is gone');
+      assert.match(fs.readFileSync(r.reportFile, 'utf8'), /增量包：\*\*未生成\*\*（打包时指定了 --no-delta）/, 'the report says why');
+      assert.equal(r.base.build, 6, 'the diff base is still found (only the pack is withheld)');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

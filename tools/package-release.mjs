@@ -380,13 +380,15 @@ export function release(o = {}) {
  * new 清单, so the two must be byte-identical — checked below.
  *
  * @param {{ inventory?: object|null, payloadRoot?: string, version: string, build: number, dist: string,
- *   baseInventory?: string, log?: (...a: any[]) => void }} o
+ *   baseInventory?: string, invDir?: string, noDelta?: boolean, log?: (...a: any[]) => void }} o
  * @returns {{ inventory: object, file: string, distFile: string, base: object|null, diff: object|null,
  *   reportFile: string, delta: object|null, deltaFile: string }}
  */
 export function writeInventoryArtifacts(o) {
   const log = o.log ?? (() => {});
-  const invDir = path.join(CLIENT_ROOT, 'build', 'inventories');
+  // `invDir` is where per-build 清单 are kept so the *next* release can diff against them. Overridable so tests do
+  // not write into (or delete from) the real build/inventories — a test once removed payload-6.json from it.
+  const invDir = o.invDir ?? path.join(CLIENT_ROOT, 'build', 'inventories');
   const file = path.join(invDir, `payload-${o.build}.json`);
   // assembleClient hands its inventory over (it has just hashed the tree); otherwise reuse the copy the payload
   // carries — re-hashing 670 MB to learn what is already written down is pure waste.
