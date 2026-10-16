@@ -660,11 +660,19 @@ node <游戏仓库>/tools/plugin.mjs check %APPDATA%\StrongholdProtocol\plugins\
 
 已知边界：
 
-* **单人模式与「对局域网开放」的房间目前还不会启用插件**——房间要开插件，需要页内服务器拿到内容身份与解析器（`content` / `plugins: roomSets`）。桌面壳已经能把插件**服务**出去（个人外观插件在页面上可用），房间级的开关是下一步。
+* **页内服务器（单人模式 / 「对局域网开放」）目前不会启用插件**。页面的取数门槛是**服务器**在 `welcome` 里报的 `plugins > 0`（`public/js/content.js` 的注释写得很清楚：没有插件的服务器什么也不发，页面就永远不去取 `/plugins/index.json`）。而页内 Lobby 现在拿不到内容身份与解析器（`content` / `plugins: roomSets`），所以它"看起来就是一台没有插件的服务器"。**壳已经把插件的 URL 空间服务出去了（已实测）**，缺的是最后这一步：壳把插件目录扫成一份可序列化快照交给页面，页面用上游那几个纯模块（`roomSets.js` / `contentSets.js` / `visualSet.js`）构造解析器，再注入 Lobby。做完之后单人/局域网房间才能开插件。
+* **连远程服务器时的语义**：页面取到的目录是**本机壳**服务的那份（同源），而房间里的 `vs` 是**服务器**按它自己的插件集算出来的。两边插件集不一致时，本机找不到那个 `vs` 的文档，客户端就退回自带素材（它本来就这么设计：文档取不到/校验不过就保留原样）。所以要让插件在多人里真正生效，本机装的插件集应当与服务器一致。
 * 客户端内**安装/打包**插件、插件工作室（`/studio/`）、可信脚本插件的沙箱试跑都需要活服务器，离线不做。
-* **Android 还没有这一层**：Capacitor 的本地资源服务是 Java 侧，跑不了 JS handler。要么在原生侧实现注册表（工作量大），要么 Android 只带"打包时烘进 payload"的插件。见 §16 后的说明。
+* **Android 还没有这一层**：Capacitor 的本地资源服务是 Java 侧，跑不了 JS handler。要么在原生侧实现注册表（工作量大），要么 Android 只带"打包时烘进 payload"的插件。
 
+### 18.1 已经实测过的（打包产物上）
 
-每次打包，只要和上一版有差异，就会多出一个**增量包** `build/dist/delta-<base>-<build>.zip`：只装变化的文件，外加它自己的校验清单 `payload/delta.json`。
+```bash
+# 启动打包好的客户端，指定一个干净的 user-data 目录（日志、插件目录、信任证书都在其中）
+StrongholdProtocol.exe --user-data-dir=<tmp>
+# 应用自己会创建 <tmp>/plugins/
+# 运行中往里面丢一个插件文件夹（用游戏仓库自己的工具生成，不需要重启）：
+node <游戏仓库>/tools/plugin.mjs new art <id> --target ui --dir <tmp>/plugins
+```
 
-实测 0.2.4 → 0.2.5：**1824 个文件，85.0 MB 原始 → 74.7 MB 压缩**（全量 APK 455.1 MB，体积报告 `build/reports/report-6.md`）。客户端点一下「下载并更新」就完成，**不用安装器、不重装、存档天然不受影响**。
+实测结果：目录里从 4 个语言包变成 5 条，新增项是 `{id:<id>, class:cosmetic, status:loaded, source:plugins, unofficial:true, scope:[room,personal], permissions:[assets.override]}`，它的视觉集 `/vs/<16hex>/overlay.json` 返回 200。
