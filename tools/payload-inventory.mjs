@@ -174,11 +174,11 @@ function byTopDir(entries) {
  * against a given base — the half-step that tells us whether the delta machinery is worth anything before building
  * it. Markdown, so it can be dropped into a PR or the session notes as-is.
  *
- * @param {{ inv: object, diff?: object|null, baseBuild?: number|null, baseVersion?: string|null, deltaFile?: {name: string, size: number}|null, biggest?: number }} input
+ * @param {{ inv: object, diff?: object|null, baseBuild?: number|null, baseVersion?: string|null, deltaFile?: {name: string, size: number}|null, deltaWithheld?: string|null, biggest?: number }} input
  * @returns {string}
  */
 export function inventoryReport(input) {
-  const { inv, diff = null, baseBuild = null, baseVersion = null, deltaFile = null } = input;
+  const { inv, diff = null, baseBuild = null, baseVersion = null, deltaFile = null, deltaWithheld = null } = input;
   const biggest = input.biggest ?? 15;
   const label = `${inv.version || '?'} (build ${inv.build})`;
   const lines = [];
@@ -195,6 +195,9 @@ export function inventoryReport(input) {
       const saved = diff.total - deltaFile.size;
       lines.push(`- 增量包 ${deltaFile.name}：**${human(deltaFile.size)}**，`
         + `比全量少 ${human(Math.max(saved, 0))}（${diff.total ? ((saved / diff.total) * 100).toFixed(1) : '0.0'}% 的流量）`);
+    }
+    if (deltaWithheld || !deltaFile) {
+      lines.push(`- 增量包：**未生成**${deltaWithheld ? `（${deltaWithheld}）` : ''} —— 这一版客户端只能全量安装，上面的「需传输」只是参考`);
     }
   } else {
     lines.push('- 没有基准清单（build/inventories/ 里没有更早的 payload-<build>.json）—— 本次只能报全量，'

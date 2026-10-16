@@ -322,7 +322,7 @@ export function release(o = {}) {
   // 清单 + 体积报告 (docs/PACKAGING.md §15) — see writeInventoryArtifacts().
   const inv = writeInventoryArtifacts({
     inventory: built.inventory, payloadRoot: built.out, version, build,
-    dist, baseInventory: o.baseInventory, log,
+    dist, baseInventory: o.baseInventory, noDelta: o.noDelta, log,
   });
   if (inv.delta) artifacts.push(inv.deltaFile);
 
@@ -418,6 +418,10 @@ export function writeInventoryArtifacts(o) {
   let delta = null;
   const deltaFile = path.join(o.dist, deltaFileName(baseInv?.build ?? 0, o.build));
   if (o.noDelta) {
+    // The caller decided this release must be a full install (a shell change, or the release that introduces the
+    // overlay). Drop any pack a previous run of this same build left behind: the feed must not name one, and a
+    // stale file in build/dist/ is exactly what a later `publish-release` would upload.
+    fs.rmSync(deltaFile, { force: true });
     log('package-release: --no-delta —— 这一版不带增量包（客户端走全量安装）');
   } else if (!diff || !o.payloadRoot) {
     log('package-release: 没有基准清单 —— 这一版不带增量包（客户端走全量安装）');
@@ -450,6 +454,7 @@ export function writeInventoryArtifacts(o) {
   fs.writeFileSync(reportFile, inventoryReport({
     inv, diff, baseBuild: baseInv?.build ?? null, baseVersion: baseInv?.version ?? null,
     deltaFile: delta ? { name: delta.name, size: delta.size } : null,
+    deltaWithheld: delta ? null : (o.noDelta ? '打包时指定了 --no-delta' : null),
   }));
   log(`package-release: 清单 → ${path.relative(CLIENT_ROOT, file).split(path.sep).join('/')}`
     + `（${inv.totals.files} 个文件, ${human(inv.totals.bytes)}，同时作为发布产物 payload-${o.build}.json）`);
