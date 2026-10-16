@@ -565,9 +565,7 @@ feed（`latest.json`）里多一个 `payload` 字段（schema 仍是 1，老客�
 
 ## 16. 应用内增量更新（Android overlay）
 
-每次打包，只要和上一版有差异，就会多出一个**增量包** `build/dist/delta-<base>-<build>.zip`：只装变化的文件，外加它自己的校验清单 `payload/delta.json`。
-
-实测 0.2.4 → 0.2.5：**1824 个文件，85.0 MB 原始 → 74.7 MB 压缩**（全量 APK 455.1 MB，体积报告 `build/reports/report-6.md`）。客户端点一下「下载并更新」就完成，**不用安装器、不重装、存档天然不受影响**。
+> 桌面版的插件与 `resources/srv` 见 §17 / §18。
 
 ### 16.1 为什么不能直接替换文件
 
@@ -620,3 +618,53 @@ filesDir/overlay/<build>/payload.json   合并后的清单（APK 的清单 + 本
 # 4) 修复路径：clearOverlay()（插件方法）删掉 overlay 回到 APK 自身
 ```
 
+## 17. 桌面版为什么带一份"服务端代码树"
+
+0.3.0 起，桌面客户端里有两份游戏代码，**各司其职**：
+
+| 位置 | 内容 | 谁用 |
+|---|---|---|
+| `resources/www/`（payload） | 摊平后的**页面侧**代码与素材（`public/**`、`data/`、`shared/`、`sim/`、`server/{net,lobby,match,sim}/**`、`offline/**`、`js/shell/**`） | WebView 里的页面 + 页内服务器（单人模式 / 手机开服） |
+| `resources/srv/`（`tools/server-tree.mjs`） | 游戏仓库 `server/` + `shared/` 的**逐字节副本**（463 个文件，5.8 MB） | Electron 主进程：加载上游自己的静态处理器 |
+
+原因：0.3.0 的插件、内容集、外观集都由 `server/http/static.js` 从 `server/plugins/registry.js` 现算并服务（`/plugins/index.json`、`/p/<hash>/…`、`/vs/<hash>/overlay.json`、`/cs/<hash>/…`）。客户端自己猜这些 URL 的语义就会和服务器漂移，所以桌面壳**直接把请求交给上游 handler**（`desktop/serve.mjs` 的 `loadGameServer`）——同一份代码、同一张 MIME 表、同样的缓存/范围/哈希 URL 语义。
+
+两份代码不能合并成一份，因为 `server/data.js` 有两个互不兼容的角色：页面侧是"fetch `/data/*.json` + 接收页面注入的 sim 数据"，node 侧是"读数据目录、导出 `ROOT`/`DATA_DIR`"。分开之后每棵树都自洽，`assertServerTreeContract()` 再核对两份的契约（`DATA_SHIM_JS` / `SIM_PRIVATE`）确实来自同一次构建。
+
+**页面侧边界由 import 图保证**：`tools/page-graph.mjs` 从页面入口（`offline/bootstrap.js`、`js/shell/picker.js` 等）跟随 `import`，据此检查
+
+* 页面能到达的模块只允许 `node:crypto` / `node:net`（其余靠 `offline/` 的 shim + import map）；
+* `server/http/`、`server/plugins/`、`server/studio/` 这些 **Node 专用层绝不能出现在页面的 import 图里**（它们也不进 payload，见 `SERVER_PRIVATE_DIRS`）；
+* 页面引用的模块必须真的存在（否则运行时 404）。
+
+出问题时报错会给出**完整 import 链**（`offline/bootstrap.js → server/lobby.js → server/match/host/index.js`），比"某个文件 import 了 node:fs"有用得多。
+
+## 18. 插件（桌面版：运行时可装入）
+
+桌面客户端的插件放在可写目录：
+
+```
+%APPDATA%\StrongholdProtocol\plugins\<插件 id>\    ← 把插件文件夹丢进来即可
+```
+
+启动时壳会创建这个目录，注册表约 1 秒轮询一次，所以**不用重启**：丢进去，回到主页就能在「设置 → 外观插件」里看到（服务端不受影响的那类插件），刷新一下页面即可生效。目录里的插件由壳扫描并服务，页面通过同一套 URL（`/plugins/index.json`、`/vs/…`、`/p/…`）拿——和连真实服务器时完全一样。
+
+命令行自查：
+
+```bash
+# 这台机器上到底装了什么（用游戏仓库自己的工具，--root 指向 srv 树）
+node <游戏仓库>/tools/plugin.mjs list --root <resources/srv>
+# 校验某个插件文件夹（不改动任何东西）
+node <游戏仓库>/tools/plugin.mjs check %APPDATA%\StrongholdProtocol\plugins\<id>
+```
+
+已知边界：
+
+* **单人模式与「对局域网开放」的房间目前还不会启用插件**——房间要开插件，需要页内服务器拿到内容身份与解析器（`content` / `plugins: roomSets`）。桌面壳已经能把插件**服务**出去（个人外观插件在页面上可用），房间级的开关是下一步。
+* 客户端内**安装/打包**插件、插件工作室（`/studio/`）、可信脚本插件的沙箱试跑都需要活服务器，离线不做。
+* **Android 还没有这一层**：Capacitor 的本地资源服务是 Java 侧，跑不了 JS handler。要么在原生侧实现注册表（工作量大），要么 Android 只带"打包时烘进 payload"的插件。见 §16 后的说明。
+
+
+每次打包，只要和上一版有差异，就会多出一个**增量包** `build/dist/delta-<base>-<build>.zip`：只装变化的文件，外加它自己的校验清单 `payload/delta.json`。
+
+实测 0.2.4 → 0.2.5：**1824 个文件，85.0 MB 原始 → 74.7 MB 压缩**（全量 APK 455.1 MB，体积报告 `build/reports/report-6.md`）。客户端点一下「下载并更新」就完成，**不用安装器、不重装、存档天然不受影响**。

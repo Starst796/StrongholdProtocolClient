@@ -59,7 +59,7 @@ export function applyHooks(src) {
     '    { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js", "node:crypto": "/offline/node-crypto.js", "node:net": "/offline/node-net.js" } }',
     'index.html importmap');
   html = replaceOnce(html,
-    `  <script type="module" src="/js/main.js" onerror="window.__spBootFail && window.__spBootFail('load')"></script>`,
+    `  <script type="module" src="/js/main.js" id="sp-main"></script>`,
     L('  <!-- Packaged-client server address (empty in the web build → the page\'s own origin). Must run before /js/main.js. -->',
       '  <script src="/js/runtime-config.js"></script>',
       '  <!-- Node globals for the in-page server (process / setImmediate). A CLASSIC script, so it runs before the',
@@ -71,7 +71,9 @@ export function applyHooks(src) {
       '  <script src="/offline/host-mobile.js"></script>',
       '  <script type="module" src="/js/shell/picker.js"></script>',
       '  <script type="module" src="/offline/bootstrap.js"></script>',
-      `  <script type="module" src="/js/main.js" onerror="window.__spBootFail && window.__spBootFail('load')"></script>`),
+      // up to 0.2.5 this line carried an inline onerror; /js/boot.js now owns boot diagnostics (it listens for an
+      // error on #sp-main, and the CSP forbids inline handlers), so the client hooks are inserted before it instead.
+      `  <script type="module" src="/js/main.js" id="sp-main"></script>`),
     'index.html scripts');
   out['index.html'] = html;
 

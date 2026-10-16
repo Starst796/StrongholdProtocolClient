@@ -348,15 +348,101 @@ describe('shell picker latency probe', () => {
 });
 
 describe('offline server node-builtin guard', () => {
+  /**
+   * A payload-shaped tree whose page entries reach the files given. The guard follows the page's import graph
+   * (tools/page-graph.mjs), so a fixture has to look like a payload: the offline entries are what the page starts
+   * from, and only what they reach is checked.
+   */
+  const fixture = (dir, files) => {
+    write(dir, 'offline/bootstrap.js', "import '../server/net.js';\nimport '../server/lobby.js';\n");
+    write(dir, 'offline/game-server.js', "import '../server/match/M.js';\n");
+    write(dir, 'offline/loopback.js', 'export const L = 1;\n');
+    // The barrel the entries import must exist, or the graph reports it unresolved before the assertions run.
+    if (!files['server/match/M.js']) write(dir, 'server/match/M.js', 'export const M = 1;\n');
+    for (const [rel, text] of Object.entries(files)) write(dir, rel, text);
+  };
+
   test('allows the shimmed builtins, ignores comments, rejects anything else', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
     try {
-      // node:http appears only in a JSDoc type position — not a real import, must not trip the guard
-      write(dir, 'server/net.js', "import { randomBytes } from 'node:crypto';\nimport { isIP } from 'node:net';\n/** @param {import('node:http').IncomingMessage} r */\nexport const N = 1;\n");
-      write(dir, 'server/lobby.js', "import { randomInt } from 'node:crypto';\nexport const L = 1;\n");
+      fixture(dir, {
+        // node:http appears only in a JSDoc type position — not a real import, must not trip the guard
+        'server/net.js': "import { randomBytes } from 'node:crypto';\nimport { isIP } from 'node:net';\n/** @param {import('node:http').IncomingMessage} r */\nexport const N = 1;\n",
+        'server/lobby.js': "import { randomInt } from 'node:crypto';\nexport const L = 1;\n",
+      });
       assert.doesNotThrow(() => assertServerNeedsOnlyShims(dir));
-      write(dir, 'server/match/M.js', "import fs from 'node:fs';\n");
+      fixture(dir, { 'server/match/M.js': "import fs from 'node:fs';\n" });
       assert.throws(() => assertServerNeedsOnlyShims(dir), /node:fs/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a Node-only module the page cannot reach is none of its business', () => {
+    // 0.3.0's server/ also holds the plugin registry and the HTTP stack. The *shell* loads those (from its own copy,
+    // tools/server-tree.mjs); flagging them would make every legitimate `node:fs` use a build failure.
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    try {
+      fixture(dir, { 'server/net.js': 'export const N = 1;\n', 'server/lobby.js': 'export const L = 1;\n' });
+      // Mirrored (it is not in SERVER_PRIVATE_DIRS) but never imported by the page: node:fs is fine here.
+      write(dir, 'server/match/host/index.js', "import { fork } from 'node:child_process';\nexport const H = 1;\n");
+      assert.doesNotThrow(() => assertServerNeedsOnlyShims(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('...but a file that DOES reach it fails, with the chain that reaches it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    try {
+      fixture(dir, {
+        'server/net.js': 'export const N = 1;\n',
+        'server/lobby.js': "import './match/host/index.js';\nexport const L = 1;\n",
+        'server/match/host/index.js': "import { fork } from 'node:child_process';\nexport const H = 1;\n",
+      });
+      assert.throws(() => assertServerNeedsOnlyShims(dir), (e) => {
+        assert.match(e.message, /node:child_process/);
+        assert.match(e.message, /server\/match\/host\/index\.js/);
+        assert.match(e.message, /offline\/bootstrap\.js → server\/lobby\.js → server\/match\/host\/index\.js/, 'the chain is the diagnostic');
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the Node-only subtrees are refused the moment the page reaches one', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    try {
+      fixture(dir, {
+        'server/net.js': 'export const N = 1;\n',
+        'server/lobby.js': "import './plugins/registry.js';\nexport const L = 1;\n",
+        'server/plugins/registry.js': 'export const R = 1;\n',
+      });
+      assert.throws(() => assertServerNeedsOnlyShims(dir), /Node 专用层|never load it/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('an import the payload cannot resolve is reported instead of 404ing in the game', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    try {
+      fixture(dir, {
+        'server/net.js': "import './missing-module.js';\nexport const N = 1;\n",
+        'server/lobby.js': 'export const L = 1;\n',
+      });
+      assert.throws(() => assertServerNeedsOnlyShims(dir), /missing-module\.js/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a payload with no page entries is a lie, not a pass', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    try {
+      write(dir, 'server/net.js', 'export const N = 1;\n');
+      assert.throws(() => assertServerNeedsOnlyShims(dir), /找不到页面入口/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -580,7 +666,12 @@ describe('desktop packaging layout', () => {
     assert.deepEqual(build.win.target, ['dir']);
     // Electron ships ~48 locales (~48 MB); a Chinese/English game only needs these two.
     assert.deepEqual(build.electronLanguages, ['zh-CN', 'en-US']);
-    assert.deepEqual(build.extraResources, [{ from: '../build/client/www', to: 'www' }]);
+    // www is the payload; srv is the game's own server tree, which the shell loads so plugins and content sets work
+    // (tools/server-tree.mjs, docs/PACKAGING.md §17).
+    assert.deepEqual(build.extraResources, [
+      { from: '../build/client/www', to: 'www' },
+      { from: '../build/client/srv', to: 'srv' },
+    ]);
     assert.equal(build.directories.output, '../build/desktop');
   });
 

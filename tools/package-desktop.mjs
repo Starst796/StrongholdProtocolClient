@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, assembleClient, assertArtComplete, parseCommonArgs } from './package-client.mjs';
+import { assertServerTreeContract, stageServerTree } from './server-tree.mjs';
 
 const DESKTOP = path.join(CLIENT_ROOT, 'desktop');
 
@@ -64,6 +65,11 @@ function dirBytes(dir) {
 export function buildDesktop(o = {}) {
   const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
   assertArtComplete(built);
+
+  // The desktop shell runs the game's own server tree (server/ + shared/) so it can serve plugins, content sets and
+  // the content-addressed URLs a 0.3.0 client asks for; see tools/server-tree.mjs and docs/PACKAGING.md §17.
+  const srv = stageServerTree({ gameRoot: built.gameRoot });
+  assertServerTreeContract(srv.out);
 
   const builder = pkgBin(path.join(DESKTOP, 'node_modules', 'electron-builder'), 'electron-builder');
   const electronDist = path.join(DESKTOP, 'node_modules', 'electron', 'dist');

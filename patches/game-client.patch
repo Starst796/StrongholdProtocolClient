@@ -1,8 +1,8 @@
 diff --git a/public/index.html b/public/index.html
-index 0e44c46..50efeb3 100644
+index 42d4c57..2fcc0e8 100644
 --- a/public/index.html
 +++ b/public/index.html
-@@ -46,9 +46,11 @@
+@@ -47,9 +47,11 @@
    <link rel="stylesheet" href="/css/screens/stats.css" />
    <link rel="stylesheet" href="/css/emotes.css" />
    <link rel="stylesheet" href="/css/devices.css" />
@@ -15,10 +15,10 @@ index 0e44c46..50efeb3 100644
    </script>
    <link rel="modulepreload" href="/vendor/preact.module.js" />
    <link rel="modulepreload" href="/vendor/hooks.module.js" />
-@@ -100,6 +102,17 @@
-       if (/specifier|resolve|import|module/i.test(String(ev && ev.message))) window.__spBootFail('load');
-     });
-   </script>
+@@ -82,6 +84,17 @@
+   <noscript><p style="color:#c3cbc7;text-align:center;padding:40px">需要启用 JavaScript 才能运行本游戏。</p></noscript>
+ 
+   <script src="/js/boot.js"></script>
 +  <!-- Packaged-client server address (empty in the web build → the page's own origin). Must run before /js/main.js. -->
 +  <script src="/js/runtime-config.js"></script>
 +  <!-- Node globals for the in-page server (process / setImmediate). A CLASSIC script, so it runs before the
@@ -30,9 +30,9 @@ index 0e44c46..50efeb3 100644
 +  <script src="/offline/host-mobile.js"></script>
 +  <script type="module" src="/js/shell/picker.js"></script>
 +  <script type="module" src="/offline/bootstrap.js"></script>
-   <script type="module" src="/js/main.js" onerror="window.__spBootFail && window.__spBootFail('load')"></script>
-   <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
-   <script>
+   <script type="module" src="/js/main.js" id="sp-main"></script>
+   <script nomodule src="/js/bootLegacy.js"></script>
+ 
 diff --git a/public/js/net.js b/public/js/net.js
 index 44510f0..70cb163 100644
 --- a/public/js/net.js
@@ -140,19 +140,19 @@ index 44510f0..70cb163 100644
    return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
  }
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index 9768e31..1b320e2 100644
+index 436f886..f799ea7 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
-@@ -22,7 +22,7 @@ import { GuideButton } from '../ui/guide.js';
- import { openStats } from './stats.js';
- import { SettingsButton } from '../ui/settings.js';
+@@ -29,7 +29,7 @@ import { SettingsButton } from '../ui/settings.js';
  import { LoadoutButton } from './loadout.js';
+ import { PluginTag, isModdedRoom } from '../ui/pluginTag.js';
+ import { hasScriptConsent, rememberScriptConsent } from '../content.js';
 -import { net } from '../net.js';
 +import { net, resolveServerTarget, toHttpUrl } from '../net.js';
  import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
  import { difficultyInfo } from './lobby.js';
  import { t, tc } from '../../../shared/i18n.js';
-@@ -84,10 +84,11 @@ export function aiLastOption(room, myId) {
+@@ -97,10 +97,11 @@ export function aiLastOption(room, myId) {
    return { on: room.aiPicksLast === true, editable: room.hostId != null && room.hostId === myId };
  }
  

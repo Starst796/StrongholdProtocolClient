@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 /** Extension → Content-Type (same table as server/index.js MIME). */
 export const MIME = Object.freeze({
@@ -128,12 +130,76 @@ export function healthzProxyTarget(rawUrl) {
 }
 
 /**
+ * Load the game's own static handler out of the staged server tree (`resources/srv`, see tools/server-tree.mjs).
+ *
+ * A packaged client serves its payload itself, and until 0.3.0 that meant a hand-written static server (the code
+ * below) because the payload is a plain directory. 0.3.0 changed that: plugins, content sets and visual sets are
+ * served from `server/http/static.js` out of `server/plugins/registry.js`, and a client that answers those URLs with
+ * its own guesswork would drift from the server it plays with. So when the server tree is there, the shell hands
+ * every request to upstream's handler instead — the same code, the same MIME table, ETags, ranges, caching and
+ * content-addressed URLs, and `/plugins/index.json`, `/p/<hash>/…`, `/vs/<hash>/overlay.json`, `/cs/<hash>/…` work
+ * as they do on a real server.
+ *
+ * The plugin directory is a *user* directory (`<userData>/plugins`), which is what makes plugins a runtime thing
+ * rather than something baked into the installer: dropping a plugin folder in there is picked up on the registry's
+ * rescan (~1 s), for this window and for anyone on the LAN it is hosting.
+ *
+ * Returns null — the caller then uses the built-in static server — when the tree is absent (a payload built without
+ * one, the tests) or fails to load. A client without plugins must still play, so nothing here is fatal.
+ *
+ * @param {{ payloadDir: string, srvDir?: string, pluginsDir?: string, log?: { warn?: Function, error?: Function } }} opts
+ * @returns {Promise<{ handler: Function, registry: object, dirs: object }|null>}
+ */
+export async function loadGameServer({ payloadDir, srvDir, pluginsDir, log = console } = {}) {
+  if (!srvDir || !existsSync(path.join(srvDir, 'server', 'http', 'static.js'))) return null;
+  try {
+    const imp = (rel) => import(pathToFileURL(path.join(srvDir, rel)).href);
+    const [{ createStaticHandler }, { createPluginRegistry }, { createVisualSets }, { createContentSets }] = await Promise.all([
+      imp('server/http/static.js'),
+      imp('server/plugins/registry.js'),
+      imp('server/plugins/visualSet.js'),
+      imp('server/plugins/contentSets.js'),
+    ]);
+    if (pluginsDir) fs.mkdirSync(pluginsDir, { recursive: true });
+    const dirs = {
+      publicDir: path.resolve(payloadDir),
+      dataDir: path.join(path.resolve(payloadDir), 'data'),
+      sharedDir: path.join(path.resolve(payloadDir), 'shared'),
+      simDir: path.join(path.resolve(payloadDir), 'sim'),
+      packsDir: path.join(path.resolve(payloadDir), 'packs'),
+      pluginsDir: pluginsDir ? path.resolve(pluginsDir) : null,
+    };
+    // The game's modules log through an object with info/warn/error/debug; route them to the client log.
+    const quiet = {
+      info: () => {},
+      warn: (...a) => log.warn?.('[game]', ...a),
+      error: (...a) => log.error?.('[game]', ...a),
+      debug: () => {},
+    };
+    const registry = createPluginRegistry({ ...dirs, log: quiet }, { log: quiet });
+    const handler = createStaticHandler({
+      ...dirs,
+      packs: registry,
+      visual: createVisualSets({ registry, log: quiet }),
+      // vanillaData is only read for `config.modes` (to tell a plugin's new mode from a re-defined official one);
+      // null keeps the payload's data files out of the shell's memory. Modes still work, they are just all "new".
+      contents: createContentSets({ registry, vanillaData: null, log: quiet }),
+      log: quiet,
+    });
+    return { handler, registry, dirs };
+  } catch (e) {
+    log.warn?.('[client] game server tree not loaded (no plugins / content sets):', e?.message || e);
+    return null;
+  }
+}
+
+/**
  * The request handler served by createStaticServer, exported so a caller that owns its own http.Server (the LAN
  * host, desktop/host-server.mjs — HTTP and WebSocket share one port there) can reuse the exact same static logic.
- * @param {{ root: string, proxy?: boolean, log?: { warn?: Function, error?: Function } }} opts
+ * @param {{ root: string, proxy?: boolean, game?: { handler: Function }|null, log?: { warn?: Function, error?: Function } }} opts
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createRequestHandler({ root, proxy = false, log = console } = {}) {
+export function createRequestHandler({ root, proxy = false, game = null, log = console } = {}) {
   const rootAbs = path.resolve(root);
 
   const finish = (req, res, status, headers, body) => {
@@ -164,6 +230,14 @@ export function createRequestHandler({ root, proxy = false, log = console } = {}
 
   async function handle(req, res) {
     if (proxy && healthzProxyTarget(req.url)) { await proxyHealthz(req, res); return; }
+    // The game's own handler (0.3.0+): it knows the payload's URL space — plugins, content sets, hashed asset and
+    // data URLs, the MIME table, ranges, ETags and cache policy — and keeping it in charge is what keeps a packaged
+    // client byte-compatible with the server it plays with. It does its own method check.
+    if (game) {
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+      await game.handler(req, res, url.pathname, url.search);
+      return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD');
       finish(req, res, 405, { 'Content-Type': 'text/plain; charset=utf-8' }, 'method not allowed');
@@ -228,11 +302,11 @@ export function createRequestHandler({ root, proxy = false, log = console } = {}
  * Start the loopback static server (the packaged client's own window).
  *
  * See createRequestHandler for the request logic; this only adds the listener and port search.
- * @param {{ root: string, host?: string, port?: number, proxy?: boolean, log?: { warn?: Function, error?: Function } }} opts
+ * @param {{ root: string, host?: string, port?: number, proxy?: boolean, game?: object|null, log?: { warn?: Function, error?: Function } }} opts
  * @returns {Promise<{ url: string, port: number, server: http.Server, close: () => Promise<void> }>}
  */
-export function createStaticServer({ root, host = '127.0.0.1', port = 0, proxy = false, log = console } = {}) {
-  const handle = createRequestHandler({ root, proxy, log });
+export function createStaticServer({ root, host = '127.0.0.1', port = 0, proxy = false, game = null, log = console } = {}) {
+  const handle = createRequestHandler({ root, proxy, game, log });
 
   const server = http.createServer((req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');

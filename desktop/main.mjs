@@ -24,13 +24,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
-import { createStaticServer, DEFAULT_PORT } from './serve.mjs';
+import { createStaticServer, loadGameServer, DEFAULT_PORT } from './serve.mjs';
 import { startHost } from './host-server.mjs';
 import { describeCertificate, fingerprintOf, hostKey, isTrusted, loadTrusted, remember, saveTrusted, shortFingerprint } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Payload root: resources/www in a packaged app, build/client/www when running from the repo (`npm run client:desktop:dev`). */
 const WWW = app.isPackaged ? path.join(process.resourcesPath, 'www') : path.join(HERE, '..', 'build', 'client', 'www');
+/**
+ * The game's own server tree (`resources/srv`, tools/server-tree.mjs): the shell loads its static handler so the
+ * payload is served by the same code a real server runs — which is what makes plugins, content sets and the
+ * content-addressed URLs work in a packaged client (desktop/serve.mjs loadGameServer).
+ */
+const SRV = app.isPackaged ? path.join(process.resourcesPath, 'srv') : path.join(HERE, '..', 'build', 'client', 'srv');
+/** Plugins are a user directory: dropping a folder here is picked up by the running client (docs/PACKAGING.md §18). */
+const PLUGINS = path.join(app.getPath('userData'), 'plugins');
+/**
+ * The game's own static handler, loaded once at startup (see the block that calls loadGameServer). It is module
+ * state because the LAN host needs it too: a guest must be served the same URL space this window gets.
+ */
+let gameServer = null;
 const TITLE = '卫戍协议：盟约 · STRONGHOLD PROTOCOL';
 
 /**
@@ -249,7 +262,7 @@ function registerHostIpc() {
       await previous.close().catch(() => {});
     }
     try {
-      host = await startHost({ root: WWW, log, port, strict: port !== 0 });
+      host = await startHost({ root: WWW, game: gameServer, log, port, strict: port !== 0 });
     } catch (e) {
       const busy = e?.code === 'EADDRINUSE';
       log(`[host] cannot listen on ${port}: ${e?.message || e}`);
@@ -257,7 +270,7 @@ function registerHostIpc() {
       const error = busy ? `端口 ${port} 已被占用，请换一个端口再试。` : `开启失败：${e?.message || e}`;
       if (previous) {
         try {
-          host = await startHost({ root: WWW, log, port: previous.port });
+          host = await startHost({ root: WWW, game: gameServer, log, port: previous.port });
         } catch (again) {
           log(`[host] could not restore hosting on ${previous.port}: ${again?.message || again}`);
         }
@@ -274,6 +287,11 @@ function registerHostIpc() {
 
 async function main() {
   buildMenu();
+  // The game's own handler, when the server tree ships with this build: the payload is then served by upstream's
+  // code, so /plugins/, /p/, /vs/ and /cs/ work — and the plugin directory is a writable user directory. Loaded
+  // before the host IPC is wired so "create server" serves guests the same URL space this window gets.
+  gameServer = await loadGameServer({ payloadDir: WWW, srvDir: SRV, pluginsDir: PLUGINS, log: console });
+  if (gameServer) log(`[client] game server tree loaded (${SRV}); plugins from ${PLUGINS}`);
   registerHostIpc();
   registerUpdateIpc();
   if (insecureTls) log('[client] --insecure-tls: certificate verification is OFF for this run (self-signed servers)');
@@ -287,7 +305,7 @@ async function main() {
   // A pinned port (not `0`) keeps `http://127.0.0.1:<port>` — the page's origin — identical across launches.
   // Chromium scopes localStorage by origin, so this is what lets the identity token, the loadout, settings and
   // the picker's saved server survive a restart; an OS-assigned port would silently discard all of it.
-  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, proxy: true, log: console });
+  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, proxy: true, game: gameServer, log: console });
   const query = serverOverride
     ? `?server=${encodeURIComponent(serverOverride)}`
     : (chooseServer ? '?pick=1' : '');

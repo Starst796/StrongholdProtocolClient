@@ -108,12 +108,14 @@ export function privateFirst(addresses) {
 
 /**
  * Start the host server. `root` is the payload directory (resources/www).
- * @param {{ root: string, host?: string, port?: number, strict?: boolean, log?: object }} opts
+ * @param {{ root: string, host?: string, port?: number, strict?: boolean, game?: object|null, log?: object }} opts
  *   `strict` binds exactly `port` (no search, no OS fallback) and throws EADDRINUSE when it is taken — what the
  *   picker asks for once the player has typed a port (they need that exact one for port forwarding).
+ *   `game` is the game's own static handler (desktop/serve.mjs loadGameServer): a guest must get the same URL space
+ *   the host's own window does, so /plugins/, /p/, /vs/ and /cs/ answer here too.
  * @returns {Promise<{ url: string, port: number, host: string, addresses: string[], close: () => Promise<void> }>}
  */
-export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, strict = false, log = console } = {}) {
+export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, strict = false, game = null, log = console } = {}) {
   const rootAbs = path.resolve(root);
   const logger = toLogger(log);
 
@@ -149,7 +151,7 @@ export async function startHost({ root, host = '0.0.0.0', port = HOST_PORT, stri
   // Serve the whole payload over the same port as the WebSocket, so a LAN peer can just open http://<host>:<port>
   // in any browser and play (no client install, no separate static host). The page then reaches this server
   // same-origin; `lanRuntimeConfig()` points it at its own origin instead of the baked-in default server.
-  const serveStatic = createRequestHandler({ root: rootAbs, log });
+  const serveStatic = createRequestHandler({ root: rootAbs, game, log });
 
   const server = http.createServer((req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');

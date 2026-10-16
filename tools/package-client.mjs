@@ -30,6 +30,7 @@ import {
 } from './game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
 import { assertNoNodeGlobals } from './node-globals.mjs';
+import { checkPageGraph, pageGraph } from './page-graph.mjs';
 import { INVENTORY_FILE, buildInventory, writeInventory } from './payload-inventory.mjs';
 import { CLIENT_ROOT, androidVersionCode, readRelease } from './release-meta.mjs';
 
@@ -165,11 +166,6 @@ export function assembleClient(opts = {}) {
   for (const m of GAME_MOUNTS) mirror(m.src, m.dst, MOUNT_KEEP[m.dst] ?? null);
   // The in-page server (offline/bootstrap.js) imports the real game server code; mirror it for the offline layer.
   mirror(SERVER_MOUNT.src, SERVER_MOUNT.dst, MOUNT_KEEP.server);
-  assertServerNeedsOnlyShims(out);
-  // ...and the other half of the same guard: the page imports these modules, so they must not touch a Node global
-  // the browser lacks. `assertServerNeedsOnlyShims` only sees `import` specifiers — 0.2.3's `process.env` in
-  // server/match/botEmotes.js sailed through it and broke every offline boot (see tools/node-globals.mjs).
-  assertNoNodeGlobals(out, { log });
 
   /** Write a generated file (only when its content changed, so mtimes stay stable across rebuilds). */
   const writeGenerated = (relDst, body) => {
@@ -220,12 +216,27 @@ export function assembleClient(opts = {}) {
   copied += patched.length;
   for (const f of PATCHED_FILES) expected.add(path.resolve(out, f));
 
-  // Drop payload files whose source is gone (a stale module would otherwise keep loading after an update).
+  // The two page-side guards run here, on the finished payload: they follow the import graph from the page's own
+  // entry points (tools/page-graph.mjs), so the generated and patched files have to be in place first — otherwise
+  // there would be nothing to follow and the check would pass vacuously.
+  assertServerNeedsOnlyShims(out);
+  assertNoNodeGlobals(out, { log, sources: pageGraph(out).files });
+
+  // Drop payload files whose source is gone (a stale module would otherwise keep loading after an update), then
+  // any directory left empty — an empty server/plugins/ would otherwise look like the node layer shipped.
   let removed = 0;
   const sweep = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { sweep(p); continue; }
+      if (e.isDirectory()) {
+        sweep(p);
+        if (path.resolve(p) !== path.resolve(out) && fs.readdirSync(p).length === 0) {
+          try {
+            fs.rmdirSync(p);
+          } catch { /* not empty after all, or in use: leave it */ }
+        }
+        continue;
+      }
       if (expected.has(path.resolve(p))) continue;
       fs.rmSync(p, { force: true });
       removed++;
@@ -405,34 +416,33 @@ export const INDEXED_FILES = mod.INDEXED_FILES;
 }
 
 /**
- * The in-page server runs the game's server code, so it may only import the node builtins the payload ships shims
- * for (SERVER_NODE_BUILTINS, mapped in index.html). If upstream adds another `node:` import it would break at
- * runtime in the WebView; fail the build instead.
+ * The in-page server runs the game's server code, so the files the *page* loads may only import the node builtins the
+ * payload ships shims for (SERVER_NODE_BUILTINS, mapped in index.html).
+ *
+ * This follows the page's import graph (tools/page-graph.mjs) rather than globbing `server/`: 0.3.0's `server/` also
+ * contains a Node-only layer (the plugin registry, the HTTP stack, the studio) that the desktop shell loads from its
+ * own copy and the page must never reach. Two things are therefore checked: every module the page *does* reach, and
+ * that no Node-only module became reachable at all — the second is what keeps a future change from quietly pulling
+ * `node:fs` into a WebView.
+ *
  * @param {string} payloadRoot
+ * @returns {{ files: number }}
  */
 export function assertServerNeedsOnlyShims(payloadRoot) {
-  const dir = path.join(payloadRoot, 'server');
-  if (!fs.existsSync(dir)) return;
-  const allowed = new Set(SERVER_NODE_BUILTINS);
-  const stack = [''];
-  while (stack.length) {
-    const rel = stack.pop();
-    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
-      const childRel = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) { stack.push(childRel); continue; }
-      if (!e.isFile() || !e.name.endsWith('.js')) continue;
-      // Strip comments first: JSDoc type references like `import('node:http').IncomingMessage` are not real imports.
-      const body = fs.readFileSync(path.join(dir, childRel), 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/\/\/[^\n]*/g, '');
-      for (const m of body.matchAll(/['"](node:[a-z_/]+)['"]/g)) {
-        if (!allowed.has(m[1])) {
-          throw new Error(`server/${childRel} imports ${m[1]}, which the offline shims do not provide — `
-            + `add a shim in offline/ and map it in patches/game-client.patch (allowed: ${[...allowed].join(', ')})`);
-        }
-      }
-    }
+  const graph = pageGraph(payloadRoot);
+  const { files, offenders } = checkPageGraph(graph, { builtins: SERVER_NODE_BUILTINS });
+  if (offenders.length) {
+    const lines = offenders.map((o) => `  ${o.file} ${o.reason}\n    经 ${o.chain.join(' → ')}`);
+    const allowed = SERVER_NODE_BUILTINS.join(', ');
+    throw new Error(`payload 的页面侧有 ${offenders.length} 处问题（已跟随 import 图检查 ${files} 个模块）：\n${lines.join('\n')}\n`
+      + `  只能 import ${allowed}（其余由 offline/ 的 shim + index.html 的 import map 提供）；\n`
+      + '  Node 专用层（server/http、server/plugins、server/studio）只给桌面壳用，页面不能引用它。');
   }
+  if (graph.unresolved.length) {
+    const lines = graph.unresolved.slice(0, 5).map((u) => `  ${u.from} → ${u.spec}`);
+    throw new Error(`payload 的 import 图里有 ${graph.unresolved.length} 个找不到的模块（页面会在运行时 404）：\n${lines.join('\n')}`);
+  }
+  return { files };
 }
 
 /** CLI arguments shared by package-client / package-desktop / package-android. */

@@ -45,8 +45,12 @@ export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedat
  * job a packaged client delegates to its own shell (Electron's serve.mjs, the Android host, Capacitor's WebView).
  * Its modules import node:http / node:zlib / node:fs, none of which the payload's import map provides, so keeping
  * them would only produce dead files that could never load.
+ *
+ * 0.3.0 adds two more: `plugins/` (the registry, the installer, the packer, the content-set builder — all Node-only,
+ * and the shell loads them from its own copy, tools/server-tree.mjs) and `studio/` (the plugin studio's backend).
+ * Nothing the page loads lives there; see tools/page-graph.mjs, which proves it on every build.
  */
-export const SERVER_PRIVATE_DIRS = Object.freeze(['http']);
+export const SERVER_PRIVATE_DIRS = Object.freeze(['http', 'plugins', 'studio']);
 
 /**
  * The server/ subtree the offline payload mirrors into /server/ for the in-page server (net.js, lobby.js, match/**,

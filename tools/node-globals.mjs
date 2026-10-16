@@ -90,13 +90,26 @@ export function findNodeGlobals(src, globals = [...SHIMMED_GLOBALS, ...UNSHIMMED
  *   `allow` is `file:global` (or bare `global`) entries for a *justified* exception; prefer a shim instead.
  * @returns {{ checked: number, hits: object[], shimmed: object[] }}
  */
-export function findNodeGlobalHits(payloadRoot, { allow = [], scannedDirs = SCANNED_DIRS, globals = null } = {}) {
+export function findNodeGlobalHits(payloadRoot, { allow = [], scannedDirs = SCANNED_DIRS, globals = null, sources = null } = {}) {
   const allowed = new Set(allow);
   const wanted = globals ?? [...SHIMMED_GLOBALS, ...UNSHIMMED_GLOBALS];
   const shimmed = new Set(SHIMMED_GLOBALS);
   const hits = [];
   const covered = [];
   let checked = 0;
+  /**
+   * Scan exactly these files instead of walking the tree. The caller passes the page's own reachable set (see
+   * tools/page-graph.mjs): the payload now also carries files only the *shell* loads (the plugin registry, the HTTP
+   * layer), and those are Node code — checking them here would flag every legitimate `process`/`Buffer` use.
+   */
+  if (sources) {
+    for (const [rel, text] of sources) {
+      if (!rel.endsWith('.js')) continue;
+      checked++;
+      scanSource(text, rel, { wanted, allowed, shimmed, hits, covered });
+    }
+    return { checked, hits, shimmed: covered };
+  }
   const walk = (dir, rel) => {
     if (!fs.existsSync(dir)) return;
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -105,14 +118,19 @@ export function findNodeGlobalHits(payloadRoot, { allow = [], scannedDirs = SCAN
       if (e.isDirectory()) { walk(p, r); continue; }
       if (!e.isFile() || !e.name.endsWith('.js')) continue;
       checked++;
-      for (const hit of findNodeGlobals(fs.readFileSync(p, 'utf8'), wanted)) {
-        if (allowed.has(hit.name) || allowed.has(`${r}:${hit.name}`)) continue;
-        (shimmed.has(hit.name) ? covered : hits).push({ file: r, ...hit });
-      }
+      scanSource(fs.readFileSync(p, 'utf8'), r, { wanted, allowed, shimmed, hits, covered });
     }
   };
   for (const d of scannedDirs) walk(path.join(payloadRoot, d), d);
   return { checked, hits, shimmed: covered };
+}
+
+/** One module's globals: a shimmed one is "covered" (reported as info), an unshimmed one is a finding. */
+function scanSource(text, rel, { wanted, allowed, shimmed, hits, covered }) {
+  for (const hit of findNodeGlobals(text, wanted)) {
+    if (allowed.has(hit.name) || allowed.has(`${rel}:${hit.name}`)) continue;
+    (shimmed.has(hit.name) ? covered : hits).push({ file: rel, ...hit });
+  }
 }
 
 /**

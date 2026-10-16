@@ -45,6 +45,10 @@
       {
         "from": "../build/client/www",
         "to": "www"
+      },
+      {
+        "from": "../build/client/srv",
+        "to": "srv"
       }
     ],
     "win": {
