@@ -29,6 +29,9 @@
 打 apk 另需 JDK 21+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。17 不够：Capacitor 8 的
 android 模块是 `sourceCompatibility 21`，用 17 会在 `:capacitor-android` 的 javac 报「无效源发行版: 21」。
 
+apk 在 Windows 上还有两个**跟代码无关、但会让人白折腾一小时**的前置条件：构建树必须放在**纯 ASCII 路径**下
+（AGP 直接拒绝非 ASCII 工程路径），`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` **只能设一个**。三条一起见 §7。
+
 本机环境（这台开发机）：JDK 21 在 `C:\Program Files\Java\jdk-21`，SDK 在 `%LOCALAPPDATA%\Android\Sdk`，
 项目签名 keystore 在 `D:\gits\stronghold-signing\`（`SP_KEYSTORE` 指过去即可），
 游戏仓库自带 Node 在 `d:\gits\Stronghold-Protocol\.tools\node\node.exe`，
@@ -190,6 +193,10 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 守卫报 `server/update.js imports node:fs` | `server/update.js` 被 `server/http/boot.js` 引用，payload 里是死文件：`SERVER_PRIVATE` 里加 `update.js` 即可。（**注意**：payload 是就地更新的，上一次失败运行留下的 `server/update.js` 要等构建末尾的清理才消失，而守卫在清理**之前**跑——所以修好后仍可能红一次，先删 `build/client/www` 再重打） |
 | 换台机器打的 APK 装不上、提示「签名不一致」 | **每台机器的 ~/.android/debug.keystore 都是各自生成的**（AGP 首次构建时造一份），所以"在另一台机器上打的包"= 另一把钥匙 = 无法覆盖安装，只能卸载重装（存档丢）。项目把 key 钉在 `client.config.json` 的 `android.signerSha256`：构建期核对指纹、不符拒绝构建，`package-android` 与 `publish-release` 再各验一次产物。换机器=复制那一份 `debug.keystore`（或 `SP_KEYSTORE` 指过去），**并离线备份** |
 | 想确认"这个包到底是哪把 key 签的" | `apksigner verify --print-certs <apk>`（build-tools 里）；`tools/android-signing.mjs` 在打包与发布前会自动做同一件事（GitHub 的资源 CDN 对 `Range` 返回 501，所以远端包得整包下） |
+| apk 构建一分钟就报 `Your project path contains non-ASCII characters` | AGP 拒绝非 ASCII 工程路径。**别**用 `android.overridePathCheck=true` 关检查（只是把失败换成 `Could not create provider for value source …AndroidDirectoryCreator` + `Couldn't open current thread, error = 5`），把构建树搬到纯 ASCII 路径（§7a） |
+| 报 `Failed to create service 'AndroidLocationsBuildService'` | 加 `--stacktrace` 才看得到真因 `com.android.prefs.AndroidLocationsException`：`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` 同时存在（**值相同也算冲突**）。只留前者（§7b） |
+| 报「无效源发行版: 21」/ `invalid source release: 21` | `JAVA_HOME` 是 17：Capacitor 8 的 android 模块 `sourceCompatibility 21`。换 JDK 21+；现在打包器会在 `cap sync` 之前就拒绝（§7c） |
+| 报 `Unexpected character: '"' @ app/build.gradle` 这类"语法错" | 那个文件被按平台编码（GBK）写回了，而它里面全是中文报错文案。用编辑器改、保证 UTF-8，改完 `gradlew help`（10 s）验一遍 |
 | 给 `publish()` 写集成测试时整个测试挂死 | `publish()` **从头到尾是同步的**（`spawnSync` + curl），在同一个进程里跑它会把事件循环占满——而假 API 服务器就在那个循环里，于是 curl 永远等不到响应。假服务器必须在**别的进程**，或者把 `publish()` 放到子进程里跑（`test/publish.test.js` 用后者）。同理：`req.resume()` 必须在挂 `data` 监听**之后**，否则请求体已被 flowing 模式吃掉、`end` 永远不触发 |
 | 用 PowerShell 的 `Get-Content`/`Set-Content` 改含中文的文件 | 默认编码会把 UTF-8 中文写成乱码（`/签名不一�?` 直接让 `node --check` 报正则未闭合）。要么用编辑工具改，要么 `Set-Content -Encoding utf8`；改完**务必** `node --check`。同理，**行内命令里别塞中文**（会被控制台编码破坏，PowerShell 直接解析失败） |
 | 语言切换菜单空 / `/packs/index.json` 404 | 0.2.0 的内容包（`docs/PACKS.md`）：真实服务器用 `server/packs.js` 现算索引，静态托管跑不了。打包时用**游戏自己的工具**生成 `packs/index.json`（`writePackIndex()` 调 `node tools/packs.mjs index --out …`，和上游发布 zip 同一套），并把 `packs/` 挂载一起镜像 |
@@ -216,14 +223,64 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | feed 里加了字段（`payload` / `delta`）但客户端没反应 | 客户端只认 `parseLatestFeed()` 解析出来的 feed——**新增字段必须在那里解析**（`feedSideFile()`），否则 picker 拿到的对象上根本没有这个键，判断永远走"没有增量" |
 | 首次引入 overlay 的那一版拿不到增量 | 引入 overlay 的 APK 里是**旧 picker**（不解析 `delta`），所以那一次更新必须装完整包；给那一版的后一版打包时加 `--no-delta`（包没人能用），再下一版才真正走增量 |
 
-## 7. 交付
+## 7. Windows 打包机的三个坑（报错里都不出现真正的原因）
+
+在中文 Windows 开发机上打 apk 时踩到的。CI（Ubuntu）不会遇到，exe 完全不受影响；而每次都要先摊完 800 MB payload
+才走到这一步，所以代价特别高。三条的共同点：**表层日志指向的地方都不是原因**。
+
+**（a）工程路径不能含非 ASCII 字符。** `E:\卫\fork` 这种路径 AGP 会直接拒绝（一分钟后才失败）：
+
+```
+* Where: Build file 'E:\<乱码>\fork\mobile\android\app\build.gradle' line: 1
+> Failed to apply plugin 'com.android.internal.application'.
+   > Your project path contains non-ASCII characters. This will most likely cause the build to fail on Windows.
+     Please move your project to a different directory. … This warning can be disabled by adding the line
+     'android.overridePathCheck=true' to gradle.properties file in the project directory.
+```
+
+**别照它说的关检查**：`android.overridePathCheck=true` 只是关掉这道检查，让失败改在后面的服务创建阶段出现——
+`Failed to create service 'AndroidLocationsBuildService'` + `Exception in thread "File watcher server" …
+Couldn't open current thread, error = 5`，更难查，一样构建不出来。唯一的修法是把**整份构建树搬到纯 ASCII 路径**再打：
+
+```powershell
+robocopy 'E:\卫\fork' 'E:\spbuild\proj' /MIR /XD node_modules build out .git
+```
+
+游戏 checkout 也要复制到 ASCII 路径（`SP_GAME_ROOT` 指新的那份，`--game` 同理），否则 payload 里仍会带中文路径。
+**产物目录同样要 ASCII**：`apkanalyzer` / `aapt2` 在中文路径上会收到被控制台编码毁掉的参数，报 `Access denied - E:\??`。
+
+**（b）`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` 只能设一个。** 两个都设——**哪怕值完全相同**——AGP 照样拒绝：
+
+```
+Caused by: com.android.prefs.AndroidLocationsException: Several environment variables and/or system properties contain
+different paths to the Android Preferences folder.
+- ANDROID_PREFS_ROOT(environment variable): E:\spbuild\android-user
+- ANDROID_USER_HOME(environment variable): E:\spbuild\android-user
+It is recommended to use ANDROID_USER_HOME as other methods are deprecated
+```
+
+外层只显示 `Failed to create service 'AndroidLocationsBuildService'` → `Could not create provider for value source
+AndroidLocationsBuildService.AndroidDirectoryCreator`，**不加 `--stacktrace` 看不到上面那段**（"different paths"
+是误导，值相同也算冲突）。只留 `ANDROID_USER_HOME` 即可。这条与路径无关：纯 ASCII 路径下同样复现，删掉一个立刻过。
+
+**（c）JDK 必须是 21。** 见 §0 的前置：17 能过所有"有没有 JDK"的旧检查、能同步完 800 MB payload，然后死在
+`:capacitor-android:compileDebugJavaWithJavac` 的「无效源发行版: 21」，**报错里一次都没提 21**。现在
+`package-android.mjs` 读 `<jdk>/release` 的 `JAVA_VERSION`、在 `cap sync` **之前**拒绝，`package-release.mjs` 的
+`findJdk()` 也只认 21+（`JAVA_HOME` 指 17/1.8 时不会悄悄用错，而是走"跳过 APK"那条路）。
+
+**附带一条（同一件事的另一面）**：`app/build.gradle` 里的报错文案是中文，是给人看的。所以**别用 PowerShell 的
+`Set-Content` 改它**——按平台编码写回去之后，Gradle 读出来会是
+`Unexpected character: '"' @ app/build.gradle line: 32`，看起来像语法错，其实是文件编码坏了（§6 里 `node --check`
+那行的同一类问题）。用编辑器改、或保证写 UTF-8；改完用 `gradlew help`（约 10 s）过一遍，比跑完 assemble 再发现快得多。
+
+## 8. 交付
 
 * **exe**：给 `build/desktop/win-unpacked/` 整个目录，自己压 zip（LZMA）。别只给 exe——它离不开旁边的 dll/locales/resources。
 * **apk**：debug 包用 debug keystore 签过、可直接安装；正式分发才需要自己的签名（见 `docs/PACKAGING.md` §5）。
 * 产物目录（`build/`、`mobile/android/app/build/`、`app/src/main/assets/public/`）都已 gitignore，**不要提交**。
 * 发版后玩家拿到新内容的方式：Android 从 build 7 起可以走应用内增量（§6 的最后一组行），其它情况要换新包。
 
-## 8. 验收四步
+## 9. 验收四步
 
 1. `npm test`（用例含 payload 补丁格式、游戏契约、更新与增量规则）——红了的断言先读懂，别改断言；
 2. 重新 `npm run client:desktop` + `npm run client:android`，按 §5 的 1)~5) **验产物**（哈希、启动冒烟、apk 拆包、aapt2）；

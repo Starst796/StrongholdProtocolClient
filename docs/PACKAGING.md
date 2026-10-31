@@ -333,6 +333,9 @@ node scripts/notice.mjs --clear        # 撤回
 | 连不上服务器 | 先确认服务器活着：`curl http://localhost:3000/healthz`；再用 `--server 127.0.0.1:3000` 指向本地 `npm start` 排除客户端问题。远程服务器同理，换成对应地址 |
 | 提示「客户端版本与服务器不一致」 | 服务器更新过，重新打包客户端 |
 | APK 报找不到 SDK / JDK | 检查 `ANDROID_HOME`、`JAVA_HOME`、`mobile/android/local.properties`；platform / build-tools 版本要匹配 `mobile/android/variables.gradle`（当前 36） |
+| APK 构建报 `Your project path contains non-ASCII characters` | 工程放在中文路径下（如 `E:\卫\...`）；AGP 直接拒绝这类路径，**加 `android.overridePathCheck=true` 只会换个更难查的报错**。把构建树放到纯 ASCII 路径再打 |
+| APK 构建报 `Failed to create service 'AndroidLocationsBuildService'` | `ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` 同时设了（值相同也算冲突）。只留 `ANDROID_USER_HOME`；`--stacktrace` 能看到那句 `com.android.prefs.AndroidLocationsException` |
+| APK 报 `无效源发行版: 21` | `JAVA_HOME` 指向 JDK 17，而 Capacitor 8 要 21+（现在打包脚本会在同步 payload 之前就拒绝） |
 | `sdkmanager` 报 “Package platforms not found” | 分号被 shell 拆开了，改用 `--package_file`（见 §5） |
 | 想换服务器但不重新打包 | 桌面：选择服务器页按 F2（或启动时 `--choose-server`）、或 `StrongholdProtocol.exe --server <地址>`；Android：启动时的选择服务器页；网页：`?server=<地址>` |
 | 桌面客户端启动很慢（几十秒） | 用的是单文件 `--portable`：它每次启动都要解压整包到 `%TEMP%`。改用默认的目录版（`win-unpacked/`），启动只要零点几秒 |
