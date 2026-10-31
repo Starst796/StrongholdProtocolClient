@@ -36,8 +36,30 @@ export const SIM_PRIVATE = Object.freeze(['nodedata.js']);
  * a serving concern — the payload ships the generated /packs/index.json instead) and update.js (0.2.1's update
  * package, which reads node:fs / node:path and is only reached from the private http/ boot layer). Nested
  * `index.js` files (e.g. sim/content/index.js) are real modules and must ship.
+ *
+ * 0.3.1–0.3.3 added five more, all Node-only and all reached only from the private http/ boot layer — which is why
+ * they can be left out (tools/page-graph.mjs proves nothing the page loads imports them):
+ *   versions.js           the official-version service (node:fs; server/index.js builds it at boot)
+ *   match/llmRelease.js   deletes the external-AI files from a release tree (node:fs / node:path)
+ *   match/externalAI.js, match/externalConfig.js, match/aiDigest.js
+ *                         the external-AI / LLM host and its observation digest; upstream's own packager deletes
+ *                         them from every release (server/match/llmRelease.js LLM_RELEASE_EXCLUDE). A payload is a
+ *                         release: the host cannot run in a WebView, and llmGate's stand-in reports it absent.
+ *
+ * Two more are *replaced* rather than dropped, because the page does import them and they are the only two new
+ * modules that reach for Node APIs the payload has no shim for. Both get a stand-in generated from offline/standins/
+ * (see PAGE_STANDINS in tools/package-client.mjs) that keeps the game's own pure logic:
+ *   testMode.js           server/lobby.js imports it; replaced by offline/standins/testMode.js (no node:os, no
+ *                         server/plugins/trusted.js — the page cannot enumerate interfaces anyway)
+ *   match/llmGate.js      server/match/Match.js imports it; replaced by offline/standins/llmGate.js (a release has
+ *                         no external host: createExternalAI → null, EXTERNAL_BOT → null)
  */
-export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js', 'packs.js', 'update.js']);
+export const SERVER_PRIVATE = Object.freeze([
+  'index.js', 'data.js', 'sim/nodedata.js', 'match/stubmatch.js', 'packs.js', 'update.js',
+  'versions.js',
+  'testmode.js', 'match/llmgate.js',
+  'match/llmrelease.js', 'match/externalai.js', 'match/externalconfig.js', 'match/aidigest.js',
+]);
 
 /**
  * server/ subtrees the payload never ships: `http/` is the whole node:http layer (config, static files, MIME,
@@ -49,8 +71,12 @@ export const SERVER_PRIVATE = Object.freeze(['index.js', 'data.js', 'sim/nodedat
  * 0.3.0 adds two more: `plugins/` (the registry, the installer, the packer, the content-set builder — all Node-only,
  * and the shell loads them from its own copy, tools/server-tree.mjs) and `studio/` (the plugin studio's backend).
  * Nothing the page loads lives there; see tools/page-graph.mjs, which proves it on every build.
+ *
+ * 0.3.1–0.3.3 add three: `ai/` (the external-AI advisor knowledge and transports — upstream deletes it from every
+ * release, and it reads node:fs / node:http), `health/` (the event-loop monitor, node:perf_hooks) and `workers/` (the
+ * bot-rehearsal worker pool, node:worker_threads). All three are reached only from server/index.js's boot layer.
  */
-export const SERVER_PRIVATE_DIRS = Object.freeze(['http', 'plugins', 'studio']);
+export const SERVER_PRIVATE_DIRS = Object.freeze(['http', 'plugins', 'studio', 'ai', 'health', 'workers']);
 
 /**
  * The server/ subtree the offline payload mirrors into /server/ for the in-page server (net.js, lobby.js, match/**,

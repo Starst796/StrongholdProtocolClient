@@ -3,19 +3,19 @@
 把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码都从本地读，进对局不用重新下载素材。进游戏前的菜单有三条路：**单人游戏（完全离线）**把游戏服务器（游戏仓库的 `server/net.js` + `lobby.js` + `match/` + `sim/`）直接跑在页面里，用内存回环 WebSocket 与客户端通信，**不需要任何后端**；**创建服务器**让**客户端自己当服务器**并对局域网开放（桌面版跑在 Electron 主进程，Android 跑在原生 Java 侧 + WebView 里的同一套引擎）；**加入服务器**则连到别处的服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器）。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
-本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端需要的改动（含个别上游小 bug 的修复）以补丁形式打在 payload 上（见下）。
+本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端需要的改动（含个别上游小 bug 的修复）以补丁形式打在 payload 上（见下）；0.3.1 起另有两个「页面替身」模块，因为上游让页内服务器引用了两个只有 Node 才能跑的模块（见「与游戏仓库的契约」）。
 
 ```
 npm run release             # 一键发布：对齐上游版本号 → 跑测试 → 打 exe(+zip) 与 apk → 清单/增量包/体积报告 → git 提交
 npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，双击即开）
 npm run client:android      # → mobile/android/app/build/outputs/apk/debug/app-debug.apk（0.2.5：529 MB）
 npm run client:build        # 只生成 build/client/www（想用自己的静态托管时用）
-npm test                    # 打包流程的单元/契约测试（229 用例；无游戏 checkout 时相关用例自动跳过）
+npm test                    # 打包流程的单元/契约测试（232 用例；无游戏 checkout 时相关用例自动跳过）
 npm run patch:regen         # 上游更新后重新生成 patches/game-client.patch
 npm run patch:check         # 只检查补丁是否与当前 checkout 同步（不写入）
 ```
 
-已发布版本：**0.2.5（build 6）**，更新源 <https://github.com/Starst796/StrongholdProtocolClient/releases>；客户端启动时会读该仓库 `releases/latest` 的 `latest.json`，发现更新的 build 就在主页提示，Android 可以**应用内增量更新**（只下变化的文件），桌面端给出下载页。
+源码当前对齐上游 **0.3.3**（build 8，[0.3.2 的热修复](https://github.com/sganggs/Stronghold-Protocol/blob/master/CHANGELOG.md)：第一期商店装备空栏、装备图标缓存、第一期上半／下半的满整备区互换）；最近一次**发布**的产物仍是 **0.2.5（build 6）**，更新源 <https://github.com/Starst796/StrongholdProtocolClient/releases>。客户端启动时会读该仓库 `releases/latest` 的 `latest.json`，发现更新的 build 就在主页提示，Android 可以**应用内增量更新**（只下变化的文件），桌面端给出下载页。
 
 详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**、**清单与体积报告**、**应用内增量更新**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**。
 
@@ -58,6 +58,11 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
   `index.html`（模块图之前载入 `/js/runtime-config.js`、`/js/shell/picker.js`、`/offline/node-globals.js`、`/offline/bootstrap.js`，`css/devices.css` 之后载入 `/css/shell-display.css`，并在 import map 里把 `node:crypto` / `node:net` 指到离线 shim）、`js/net.js`（`defaultWsUrl()` 支持 `globalThis.__SP_SERVER__` / `?server=host`）、`js/screens/room.js`（邀请链接指向远程网页版）。
 - 上游改了这 3 个文件 → 补丁对不上 → **构建会失败**（而不是悄悄发出一个连错服务器的客户端）。补丁**不要手改**：客户端改动以「锚定字符串替换」写在 [tools/regen-patch.mjs](tools/regen-patch.mjs)（大段替换体在 [tools/patch-hooks/](tools/patch-hooks/)），跑 `npm run patch:regen` 重新生成即可；[npm test](test/packaging.test.js) 里有一条契约用例会在补丁过期时报错（`patch:check` 同义，可接 CI）。锚点若被上游改写，regen 会明确报出是哪个锚点没找到。
 - `tools/game-contract.mjs` 里复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（避免为打包在游戏仓库里 `npm install`），每次构建都会对照契约文件（`server/http/static.js` 的 `CONTRACT_FILE`）校验。
+- **两个页面替身（0.3.1 起）**：0.3.1–0.3.3 让页内服务器引用了两个只有 Node 才能跑的模块，于是 payload 里换成替身（[offline/standins/](offline/standins/)，由 `tools/package-client.mjs` 的 `PAGE_STANDINS` 写入），游戏仓库同样零改动：
+  `server/testMode.js`（`server/lobby.js` 静态 import 它；原版读 `os.networkInterfaces()` 并 import `server/plugins/trusted.js` → `node:fs`）→ 保留上游的判定逻辑，只把「读本机网卡」判为不可用（失败关闭；页面本来就无法枚举网卡），所以页内服务器永远不开测试房；
+  `server/match/llmGate.js`（`server/match/Match.js` 静态 import 它；原版是 `node:fs` / `node:path` / `node:url` 加顶层 await 外部 AI 宿主）→ 与上游**发布包**行为一致（`createExternalAI` → `null`、`EXTERNAL_BOT` → `null`），因为上游自己的打包器也会删掉整个外部 AI 宿主。
+- **Node 专用层不进 payload**：`server/http/`、`server/plugins/`、`server/studio/`（0.3.0），以及 0.3.1–0.3.3 新增的 `server/ai/`、`server/health/`、`server/workers/` 和 `server/versions.js`、`match/llmRelease.js`、`match/externalAI.js`、`match/externalConfig.js`、`match/aiDigest.js`。桌面壳要用它们时从自己的 `resources/srv` 树（`tools/server-tree.mjs` 的原样复制）加载。
+- `tools/page-graph.mjs` 从页面入口出发跟随 import 图，**证明**页面一个 Node 专用模块都没碰到（`assertServerNeedsOnlyShims`）；`tools/node-globals.mjs` 再证明页面侧用到的 `process` / `setImmediate` 都由 `offline/node-globals.js` 提供。
 - 产物里记录构建来源：payload 的 `build.json` 与 `build/client/manifest.json` 都有 `git describe` + commit + `PROTOCOL_VERSION`。
 
 ## 用法

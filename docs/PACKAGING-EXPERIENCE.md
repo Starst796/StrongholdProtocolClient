@@ -15,7 +15,7 @@
 | `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | 548.4 MB | 单文件，启动到可用 **~60 s**（每次启动都把整个应用解到 `%TEMP%`） |
 | `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | 529.1 MB | debug 包；`--release` 出未签名的 release |
 | `npm run release` | `build/dist/`：桌面 zip + apk + `payload-<build>.json` + `delta-<base>-<build>.zip` + `latest.json` | zip 638.9 MB | 一键发布驱动，见 §5 |
-| `npm test` | —— | 229 用例 | `packaging/picker/update/signing/publish/inventory/delta/overlay/status/host`；没有游戏 checkout 时自动 skip |
+| `npm test` | —— | 232 用例 | `packaging/picker/update/signing/publish/inventory/delta/overlay/status/host`；没有游戏 checkout 时自动 skip |
 
 默认连 `localhost:3000`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
 **本打包仓库**（`Stronghold-Protocol-Client`）／**服务器启动器**（`Stronghold-Protocol-Server-Launcher`，另一件事）。

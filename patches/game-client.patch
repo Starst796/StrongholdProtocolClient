@@ -1,9 +1,9 @@
 diff --git a/public/index.html b/public/index.html
-index 42d4c57..2fcc0e8 100644
+index 22287fc..a7c6f4b 100644
 --- a/public/index.html
 +++ b/public/index.html
-@@ -47,9 +47,11 @@
-   <link rel="stylesheet" href="/css/screens/stats.css" />
+@@ -52,9 +52,11 @@
+   <link rel="stylesheet" href="/css/screens/sweep.css" />
    <link rel="stylesheet" href="/css/emotes.css" />
    <link rel="stylesheet" href="/css/devices.css" />
 +  <!-- Packaged clients: HUD scale on short landscape screens (see shell/display.css). -->
@@ -15,7 +15,7 @@ index 42d4c57..2fcc0e8 100644
    </script>
    <link rel="modulepreload" href="/vendor/preact.module.js" />
    <link rel="modulepreload" href="/vendor/hooks.module.js" />
-@@ -82,6 +84,17 @@
+@@ -87,6 +89,17 @@
    <noscript><p style="color:#c3cbc7;text-align:center;padding:40px">需要启用 JavaScript 才能运行本游戏。</p></noscript>
  
    <script src="/js/boot.js"></script>
@@ -34,7 +34,7 @@ index 42d4c57..2fcc0e8 100644
    <script nomodule src="/js/bootLegacy.js"></script>
  
 diff --git a/public/js/net.js b/public/js/net.js
-index 44510f0..70cb163 100644
+index 24f8ba5..2a3b274 100644
 --- a/public/js/net.js
 +++ b/public/js/net.js
 @@ -1,6 +1,8 @@
@@ -47,7 +47,7 @@ index 44510f0..70cb163 100644
  // - Auto-reconnect with exponential backoff + jitter; a heartbeat (`ping`) measures latency and
  //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
  //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
-@@ -93,11 +95,89 @@ export function backoffDelay(attempt, rand = Math.random) {
+@@ -96,11 +98,89 @@ export function backoffDelay(attempt, rand = Math.random) {
  }
  
  /**
@@ -140,20 +140,20 @@ index 44510f0..70cb163 100644
    return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
  }
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index 436f886..f799ea7 100644
+index 704ed5d..92a42a9 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
-@@ -29,7 +29,7 @@ import { SettingsButton } from '../ui/settings.js';
- import { LoadoutButton } from './loadout.js';
- import { PluginTag, isModdedRoom } from '../ui/pluginTag.js';
- import { hasScriptConsent, rememberScriptConsent } from '../content.js';
+@@ -65,7 +65,7 @@ import { VersionVote, versionVoteOf } from '../ui/versionVote.js';
+ import { VersionPicker } from '../ui/versionPicker.js';
+ import { DEFAULT_VERSION, lobbyVersion, needsContent, offeredDifficulties, roomVersion, serverDefaultVersion, soloTimedOf, soloTimeMsgid, versionLabel } from '../versions.js';
+ import { hasScriptConsent, rememberScriptConsent, pageVersion } from '../content.js';
 -import { net } from '../net.js';
 +import { net, resolveServerTarget, toHttpUrl } from '../net.js';
- import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
- import { difficultyInfo } from './lobby.js';
- import { t, tc } from '../../../shared/i18n.js';
-@@ -97,10 +97,11 @@ export function aiLastOption(room, myId) {
-   return { on: room.aiPicksLast === true, editable: room.hostId != null && room.hostId === myId };
+ import { store, useStore, shallowEqual, emptyMatch, isSpectating, savePref } from '../store.js';
+ import { data, useData, getConfig } from '../data.js';
+ import { chessAvatarUrl, chessPortraitUrl } from '../ui/assetUrls.js';
+@@ -176,10 +176,11 @@ export function botNameParts(seat) {
+   return m ? [m[1], m[2]] : null;
  }
  
 -/** Invite link for a room code (current page URL with ?room=CODE). */

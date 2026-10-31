@@ -19,7 +19,7 @@ import module from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { findGameRoot, SERVER_PRIVATE } from '../tools/game-contract.mjs';
-import { OFFLINE_FILES, dataFileNames, serverDataSource } from '../tools/package-client.mjs';
+import { OFFLINE_FILES, dataFileNames, serverDataSource, writePageStandins } from '../tools/package-client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GAME_ROOT = (() => {
@@ -126,6 +126,9 @@ describe('phone host round-trip', { skip: GAME_ROOT ? false : 'needs a game chec
       }
     };
     copyServer('');
+    // 0.3.1+ : server/testMode.js and server/match/llmGate.js are private (Node-only upstream) and replaced by the
+    // payload's page-safe stand-ins — the in-page server imports both.
+    writePageStandins(root);
     fs.writeFileSync(path.join(root, 'server', 'data.js'), serverDataSource(dataFileNames(GAME_ROOT)));
     fs.cpSync(path.join(GAME_ROOT, 'shared'), path.join(root, 'shared'), { recursive: true });
     const dp = OFFLINE_FILES.find(([name]) => name === 'data-provider.js');
@@ -304,6 +307,7 @@ describe('phone host bridge in the page', { skip: GAME_ROOT ? false : 'needs a g
       }
     };
     copyServer('');
+    writePageStandins(root);
     fs.writeFileSync(path.join(root, 'server', 'data.js'), serverDataSource(dataFileNames(GAME_ROOT)));
     fs.cpSync(path.join(GAME_ROOT, 'shared'), path.join(root, 'shared'), { recursive: true });
     fs.mkdirSync(path.join(root, 'data'), { recursive: true });
