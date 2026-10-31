@@ -26,7 +26,8 @@
 （`assertArtComplete`）。
 
 前置：Node 22+；一个已经 `npm install` + `npm run assets` 的**游戏仓库 checkout**；
-打 apk 另需 JDK 17+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。
+打 apk 另需 JDK 21+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。17 不够：Capacitor 8 的
+android 模块是 `sourceCompatibility 21`，用 17 会在 `:capacitor-android` 的 javac 报「无效源发行版: 21」。
 
 本机环境（这台开发机）：JDK 21 在 `C:\Program Files\Java\jdk-21`，SDK 在 `%LOCALAPPDATA%\Android\Sdk`，
 项目签名 keystore 在 `D:\gits\stronghold-signing\`（`SP_KEYSTORE` 指过去即可），

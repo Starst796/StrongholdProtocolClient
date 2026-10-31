@@ -8,8 +8,10 @@
 //   --release         build a release APK (unsigned → it still needs `apksigner`, see docs/PACKAGING.md)
 //   --skip-install    do not run `npm install` in mobile/ even when the Capacitor CLI is missing
 //
-// Needs a JDK 17+ (JAVA_HOME) and the Android SDK (`ANDROID_HOME` / the platform default location) with
-// platform 36 + build-tools 36 — the versions mobile/android/variables.gradle asks for.
+// Needs a JDK 21+ (JAVA_HOME) and the Android SDK (`ANDROID_HOME` / the platform default location) with
+// platform 36 + build-tools 36 — the versions mobile/android/variables.gradle asks for. 21 is not a preference:
+// @capacitor/android 8 compiles with `sourceCompatibility 21`, so a 17 JDK dies in :capacitor-android's
+// compileDebugJavaWithJavac with "无效源发行版: 21" after the payload has already been synced.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -41,6 +43,16 @@ function run(cmd, args, cwd, { shell = false } = {}) {
 /** Android SDK location (env first, then the per-OS default the SDK manager installs into). */
 function sdkDir() {
   return findAndroidSdk();
+}
+
+/** Major version of the JDK in `dir`, read from its `release` file; 0 when it cannot be read. */
+function javaMajor(dir) {
+  try {
+    const m = /^JAVA_VERSION="?(\d+)/m.exec(fs.readFileSync(path.join(dir, 'release'), 'utf8'));
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -78,7 +90,15 @@ ensureCleartext();
 const sdk = sdkDir();
 if (!sdk) throw new Error('找不到 Android SDK —— 设置 ANDROID_HOME（见 docs/PACKAGING.md）');
 fs.writeFileSync(path.join(ANDROID, 'local.properties'), `sdk.dir=${sdk.replace(/\\/g, '\\\\')}\n`);
-if (!process.env.JAVA_HOME) console.warn('package-android: 未设置 JAVA_HOME —— Gradle 需要 JDK 17+（见 docs/PACKAGING.md）');
+if (!process.env.JAVA_HOME) throw new Error('未设置 JAVA_HOME —— Gradle 需要 JDK 21+（见 docs/PACKAGING.md）');
+const jdkMajor = javaMajor(process.env.JAVA_HOME);
+if (jdkMajor && jdkMajor < 21) {
+  throw new Error(
+    `JAVA_HOME 指向 JDK ${jdkMajor}，但 Capacitor 8 的 android 模块用 Java 21 编译（sourceCompatibility 21）。\n` +
+    `低于 21 会在 :capacitor-android:compileDebugJavaWithJavac 报"无效源发行版: 21"，而那时 payload 已经同步完。\n` +
+    `换一个 JDK 21+ 的 JAVA_HOME 再打包（见 docs/PACKAGING.md §5）。`
+  );
+}
 
 console.log(`package-android: 把 payload 同步进 Capacitor 工程（服务器 ${built.server}，游戏 ${built.game.describe || built.game.app}）…`);
 run(process.execPath, [cli, 'sync', 'android'], MOBILE);

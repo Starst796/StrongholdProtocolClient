@@ -26,7 +26,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 |---|---|
 | 通用 | Node.js 22 / 24；一个**游戏仓库 checkout**（`Stronghold-Protocol`，默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets` 下载素材——**没有素材的客户端只是个空壳** |
 | exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装）；出 zip 用资源管理器右键，出 7z/zip 更小可用 7-Zip（可选） |
-| apk | JDK 17+（`JAVA_HOME`）、Android SDK（`ANDROID_HOME`）含 `platforms;android-36` 与 `build-tools;36.0.0`、并已接受许可协议（见 §5） |
+| apk | JDK 21+（`JAVA_HOME`）、Android SDK（`ANDROID_HOME`）含 `platforms;android-36` 与 `build-tools;36.0.0`、并已接受许可协议（见 §5） |
 
 ## 3. 命令与参数
 
@@ -432,7 +432,8 @@ package.bat --feed http://127.0.0.1:8199/latest.json   # 换一个更新 feed（
 
 - **不修改游戏仓库**：上游版本只读；补丁 / payload / 壳都在本仓库完成。
 - 上游改了 `public/index.html`、`js/net.js`、`js/screens/room.js` 时补丁会先失败（这是设计好的报警）：按 §9 重新生成 `patches/game-client.patch` 再跑。
-- 缺 JDK 17+ / Android SDK 时脚本**跳过 APK 并继续**（只报一句警告）。本机实测可用 `C:\Program Files\Java\jdk-21` 与 `%LOCALAPPDATA%\Android\Sdk`，脚本会自己找。
+- 缺 JDK 21+ / Android SDK 时脚本**跳过 APK 并继续**（只报一句警告）。本机实测可用 `C:\Program Files\Java\jdk-21` 与 `%LOCALAPPDATA%\Android\Sdk`，脚本会自己找。
+- **JDK 必须 21+**：Capacitor 8 的 android 模块是 `sourceCompatibility 21`，JDK 17 能通过"有没有 JDK"的检查，却会在 `:capacitor-android:compileDebugJavaWithJavac` 报"无效源发行版: 21"——那时 payload 已经同步完了。`package-android.mjs` 与 `package-release.mjs` 都按 `release` 文件里的 `JAVA_VERSION` 卡 21，低于就提前拒绝。
 - Windows 下 zip 用系统自带的 `tar -a`（bsdtar）；想要更小就自己用 7-Zip 的 LZMA2（见 §4.1）。
 
 ## 14. 客户端自动更新（版本检测 + 覆盖安装）

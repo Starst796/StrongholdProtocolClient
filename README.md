@@ -30,7 +30,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 |---|---|
 | 通用 | Node.js 22+；一个**游戏仓库 checkout**（默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets`（素材不在 GitHub 仓里） |
 | exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装，约 449 MB） |
-| apk | JDK 17+（`JAVA_HOME`）+ Android SDK（`ANDROID_HOME`，`platforms;android-36`、`build-tools;36.0.0`） |
+| apk | JDK 21+（`JAVA_HOME`，Capacitor 8 用 Java 21 编译；17 会在 `:capacitor-android` 的 javac 报"无效源发行版: 21"）+ Android SDK（`ANDROID_HOME`，`platforms;android-36`、`build-tools;36.0.0`） |
 
 ## 目录
 

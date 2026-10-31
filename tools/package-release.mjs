@@ -118,10 +118,25 @@ export function alignVersions(version, build = readRelease().build) {
   return changed;
 }
 
-/** JDK 17+ home: JAVA_HOME first, then the usual install roots (newest version-looking directory wins). */
+/** Major version of the JDK in `dir`, read from its `release` file; 0 when it cannot be read. */
+function javaMajor(dir) {
+  try {
+    const m = /^JAVA_VERSION="?(\d+)/m.exec(fs.readFileSync(path.join(dir, 'release'), 'utf8'));
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * JDK 21+ home: JAVA_HOME first, then the usual install roots (newest usable version wins).
+ *
+ * The 21 floor is a hard requirement of @capacitor/android 8 (sourceCompatibility 21), not a preference: a 17 JDK
+ * passes an "is there a JDK" check, then fails ~10 minutes later inside :capacitor-android's javac.
+ */
 function findJdk() {
   const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const ok = (dir) => dir && fs.existsSync(path.join(dir, 'bin', javaExe));
+  const ok = (dir) => dir && fs.existsSync(path.join(dir, 'bin', javaExe)) && javaMajor(dir) >= 21;
   if (ok(process.env.JAVA_HOME)) return process.env.JAVA_HOME;
   const roots = process.platform === 'win32'
     ? ['C:\\Program Files\\Java', 'C:\\Program Files\\Eclipse Adoptium', path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Java')]
@@ -165,7 +180,7 @@ function buildAndroid({ version, o, log }) {
   const jdk = findJdk();
   const sdk = findSdk();
   if (!jdk || !sdk) {
-    log(`package-release: 跳过 APK —— 缺少 ${!jdk ? 'JDK 17+' : 'Android SDK'}（见 docs/PACKAGING.md §5）`);
+    log(`package-release: 跳过 APK —— 缺少 ${!jdk ? 'JDK 21+' : 'Android SDK'}（见 docs/PACKAGING.md §5）`);
     return null;
   }
   const args = ['tools/package-android.mjs'];
