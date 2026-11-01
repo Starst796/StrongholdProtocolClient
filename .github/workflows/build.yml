@@ -1,0 +1,261 @@
+name: 构建客户端（exe / apk）
+
+# 四条触发：
+#   workflow_dispatch  手动出包（可选是否发布到 GitHub Releases）
+#   push → master      推代码就自动出 exe（只上传 artifact，不发 Release）
+#   push tags v*       打 tag 时出包并发布
+#   pull_request       PR 检查：只跑测试 + 补丁自检（不下载素材、不打包，省时间）
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '发布到 GitHub Releases（需要 contents: write 权限）'
+        type: boolean
+        default: false
+      build:
+        description: 客户端 build 号（留空 = release.json + 1，自动递增）
+        type: string
+        default: ''
+      notes:
+        description: 发布说明（会显示给玩家）
+        type: string
+        default: ''
+      android:
+        description: 也出 apk（需要 ANDROID_KEYSTORE_B64）
+        type: boolean
+        default: true
+  pull_request:
+    branches: [master, main]
+  # 推 master 就自动出 exe（只上传 artifact；要发布到 Releases 仍然打 tag 或手动
+  # dispatch 勾 publish）。纯文档改动不触发：一次构建 6–15 分钟、产物 768 MB。
+  # 注：路径过滤对 tag 推送不生效，所以打 tag 照旧会跑。
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# 默认最小权限；发布与回写 build 号需要写
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ── 上游游戏仓库：必须钉死 commit ────────────────────────────────────────────
+  # 补丁（patches/game-client.patch）只对 index.html / js/net.js /
+  # js/screens/room.js 里的 7 个锚点做替换。上游一改这些文件，补丁就失效、
+  # 构建会主动失败（设计如此）。升级游戏版本时先跑 `node tools/regen-patch.mjs`
+  # 重新生成补丁，再改这个 commit。
+  SP_GAME_REPO: sganggs/Stronghold-Protocol
+  SP_GAME_REF: f07b8965061bbc311ad7aa815879b09264a1e47d
+
+jobs:
+  # ── 1. 快速检查（PR 用，不需要素材，1–2 分钟）──────────────────────────────
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # 补丁自检要拿上游那三个源文件重建补丁再比对，所以也得有 checkout；素材（800 MB）不需要
+      - name: 取上游游戏仓库
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SP_GAME_REPO }}
+          ref: ${{ env.SP_GAME_REF }}
+          path: game
+          fetch-depth: 1
+
+      - name: 单元测试
+        env:
+          SP_GAME_ROOT: ${{ github.workspace }}/game
+        # 显式给 glob：game/ 就挂在 workspace 里，裸 `node --test` 会把游戏仓库自己的
+        # 1021 个测试文件一起扫进来（run #2 就是这么挂住的）
+        run: node --test "test/*.test.js"
+
+      - name: 补丁自检（按钉死的上游 commit 能否重新生成）
+        run: node tools/regen-patch.mjs --check --game game
+
+  # ── 2. 出包 ────────────────────────────────────────────────────────────────
+  build:
+    runs-on: windows-latest
+    needs: check
+    # PR 只跑上面的 check：完整出包要下 800 MB 素材、打 1.15 GB 的 exe，没必要
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+
+      # 游戏仓库单独 checkout 到 workspace 下的 game/，本仓库保持干净
+      - name: 取上游游戏仓库
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SP_GAME_REPO }}
+          ref: ${{ env.SP_GAME_REF }}
+          path: game
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # Gradle 8.14.3 + AGP 8.13 只支持到 JDK 21 左右，别用 25
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # ── 素材缓存：800 MB / 1.9 万个文件，不缓存每次多花约 15 分钟 ──────────
+      - name: 缓存游戏素材
+        uses: actions/cache@v4
+        with:
+          path: |
+            game/public/assets
+            game/data/assets.json
+          key: assets-${{ env.SP_GAME_REF }}
+          restore-keys: assets-
+
+      - name: 安装游戏仓库依赖
+        working-directory: game
+        run: npm install --omit=dev --no-audit --no-fund
+
+      # 素材来自第三方镜像。镜像上缺约 329 条（只有作者本地那份游戏客户端有），
+      # 脚本会因此以退出码 1 结束并「拒绝把清单改小」——这是预期行为，清单会
+      # 保留，所以不能让整个构建跟着挂掉。
+      - name: 下载素材
+        working-directory: game
+        continue-on-error: true
+        run: node tools/fetch-assets.mjs
+
+      - name: 校验素材就位
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'game/public/assets/char')) { throw 'public/assets 不完整：打出来的客户端会没有美术' }
+          if (-not (Test-Path 'game/data/assets.json')) { throw 'data/assets.json 缺失：客户端解析不出任何素材' }
+          $f = Get-ChildItem 'game/public/assets' -Recurse -File
+          "素材 {0} 个文件 / {1:N1} MB" -f $f.Count, (($f | Measure-Object Length -Sum).Sum / 1MB)
+
+      # ── Android SDK：runner 预装只到 platform 34/35，本项目要 36 ────────────
+      - name: 准备 Android SDK
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $sdk = $env:ANDROID_HOME
+          if (-not $sdk) { $sdk = $env:ANDROID_SDK_ROOT }
+          if (-not $sdk) { $sdk = "$env:LOCALAPPDATA\Android\Sdk" }
+          $sm = Join-Path $sdk 'cmdline-tools\latest\bin\sdkmanager.bat'
+          if (-not (Test-Path $sm)) {
+            # runner 上缺 cmdline-tools 时自己补一份
+            $zip = Join-Path $env:RUNNER_TEMP 'cmdline-tools.zip'
+            curl.exe -sSL -o $zip https://dl.google.com/android/repository/commandlinetools-win-16111833_latest.zip
+            tar -xf $zip -C $sdk
+            New-Item -ItemType Directory -Force "$sdk\cmdline-tools" | Out-Null
+            Move-Item "$sdk\cmdline-tools" "$sdk\cmdline-tools-latest" -Force
+            Move-Item "$sdk\cmdline-tools-latest" "$sdk\cmdline-tools\latest" -Force
+            $sm = Join-Path $sdk 'cmdline-tools\latest\bin\sdkmanager.bat'
+          }
+          "platform-tools`nplatforms;android-36`nbuild-tools;36.0.0" | Set-Content -Encoding ASCII "$env:RUNNER_TEMP\android-packages.txt"
+          & $sm --sdk_root="$sdk" --package_file="$env:RUNNER_TEMP\android-packages.txt"
+          # licenses 必须全接受，否则 Gradle 下载组件时会卡住
+          "y`ny`ny`ny`ny`ny`ny`ny`n" | & $sm --sdk_root="$sdk" --licenses
+          "ANDROID_HOME=$sdk" | Tee-Object -FilePath $env:GITHUB_ENV -Append
+
+      # ── 签名：有密钥才出 apk ───────────────────────────────────────────────
+      # Android 只允许「同一证书 + versionCode 不降」的覆盖安装。仓库把要用的
+      # key 钉在 client.config.json 的 android.signerSha256 里，指纹不符时
+      # build.gradle 在配置期直接拒绝构建（不是警告）。
+      #
+      # 没有密钥时：出 exe，跳过 apk。这样 PR 检查能跑通、合并后由持有原始
+      # keystore 的维护者加一次 secret，就能自动出正确签名的 apk。
+      - name: 还原签名密钥
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if (-not $env:KEYSTORE_B64) {
+            Write-Warning '没有 ANDROID_KEYSTORE_B64：本次只出 exe，跳过 apk。'
+            "SP_ANDROID=0" | Tee-Object -FilePath $env:GITHUB_ENV -Append
+            exit 0
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'sp.keystore'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:KEYSTORE_B64))
+          "SP_KEYSTORE=$path" | Tee-Object -FilePath $env:GITHUB_ENV -Append
+          "SP_ANDROID=${{ inputs.android == false && '0' || '1' }}" | Tee-Object -FilePath $env:GITHUB_ENV -Append
+          'keystore 已还原：{0} 字节' -f (Get-Item $path).Length
+
+      # 桌面壳（Electron + electron-builder）首次约 500 MB。npm 11 会拦安装脚本，
+      # 导致 electron 二进制没下载；这里兜底一次。
+      - name: 安装桌面壳依赖
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: 兜底下载 Electron 二进制
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          if (-not (Test-Path 'node_modules/electron/dist/electron.exe')) { node node_modules/electron/install.js }
+          if (-not (Test-Path 'node_modules/electron/dist/electron.exe')) { throw 'Electron 运行时仍缺失' }
+
+      - name: 安装移动壳依赖
+        if: env.SP_ANDROID == '1'
+        working-directory: mobile
+        run: npm install --no-audit --no-fund
+
+      # ── 出包 ────────────────────────────────────────────────────────────────
+      - name: 打包（exe + 可选 apk）
+        shell: pwsh
+        env:
+          SP_GAME_ROOT: ${{ github.workspace }}/game
+          SP_BUILD: ${{ inputs.build }}
+        run: |
+          $releaseArgs = @('tools/package-release.mjs', '--game', 'game', '--skip-install', '--no-commit')
+          if ($env:SP_BUILD) { $releaseArgs += @('--build', $env:SP_BUILD) }
+          if ('${{ inputs.notes }}') { $releaseArgs += @('--notes', '${{ inputs.notes }}') }
+          if ($env:SP_ANDROID -ne '1') { $releaseArgs += '--skip-android' }
+          Write-Host "node $($releaseArgs -join ' ')"
+          node @releaseArgs
+
+      # versionCode = 3030000 + build：不递增的话已装用户既收不到更新提示、
+      # 也装不上新包。只手动触发时回写，打 tag 时不动（tag 已经切好）。
+      - name: 回写 build 号
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if (git diff --cached --quiet) { Write-Host '版本号无变化，跳过提交' }
+          else {
+            $build = (Get-Content release.json -Raw | ConvertFrom-Json).build
+            git commit -m "build: $build"
+            git push
+          }
+
+      - name: 列出产物
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'build/dist')) { throw 'build/dist 不存在，打包没有产出' }
+          Get-ChildItem 'build/dist' -File | ForEach-Object { '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB) }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stronghold-b${{ github.run_number }}
+          path: build/dist
+          if-no-files-found: error
+          retention-days: 7
+
+      # ── 发布（默认关；手动触发勾选 publish 或打 tag 才发）────────────────
+      # 注意别写成 event_name == 'push'：推 master 现在也会产生 push 事件，
+      # 那样每次提交都会发一个 1.15 GB 的 Release。
+      - name: 发布到 GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node tools/publish-release.mjs

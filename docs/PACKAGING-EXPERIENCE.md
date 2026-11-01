@@ -15,7 +15,7 @@
 | `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | 548.4 MB | 单文件，启动到可用 **~60 s**（每次启动都把整个应用解到 `%TEMP%`） |
 | `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | 529.1 MB | debug 包；`--release` 出未签名的 release |
 | `npm run release` | `build/dist/`：桌面 zip + apk + `payload-<build>.json` + `delta-<base>-<build>.zip` + `latest.json` | zip 638.9 MB | 一键发布驱动，见 §5 |
-| `npm test` | —— | 229 用例 | `packaging/picker/update/signing/publish/inventory/delta/overlay/status/host`；没有游戏 checkout 时自动 skip |
+| `npm test` | —— | 232 用例 | `packaging/picker/update/signing/publish/inventory/delta/overlay/status/host`；没有游戏 checkout 时自动 skip |
 
 默认连 `localhost:3000`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／
 **本打包仓库**（`Stronghold-Protocol-Client`）／**服务器启动器**（`Stronghold-Protocol-Server-Launcher`，另一件事）。
@@ -26,7 +26,11 @@
 （`assertArtComplete`）。
 
 前置：Node 22+；一个已经 `npm install` + `npm run assets` 的**游戏仓库 checkout**；
-打 apk 另需 JDK 17+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。
+打 apk 另需 JDK 21+ 与 Android SDK（`platforms;android-36` + `build-tools;36.0.0`）。17 不够：Capacitor 8 的
+android 模块是 `sourceCompatibility 21`，用 17 会在 `:capacitor-android` 的 javac 报「无效源发行版: 21」。
+
+apk 在 Windows 上还有两个**跟代码无关、但会让人白折腾一小时**的前置条件：构建树必须放在**纯 ASCII 路径**下
+（AGP 直接拒绝非 ASCII 工程路径），`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` **只能设一个**。三条一起见 §7。
 
 本机环境（这台开发机）：JDK 21 在 `C:\Program Files\Java\jdk-21`，SDK 在 `%LOCALAPPDATA%\Android\Sdk`，
 项目签名 keystore 在 `D:\gits\stronghold-signing\`（`SP_KEYSTORE` 指过去即可），
@@ -189,6 +193,10 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 守卫报 `server/update.js imports node:fs` | `server/update.js` 被 `server/http/boot.js` 引用，payload 里是死文件：`SERVER_PRIVATE` 里加 `update.js` 即可。（**注意**：payload 是就地更新的，上一次失败运行留下的 `server/update.js` 要等构建末尾的清理才消失，而守卫在清理**之前**跑——所以修好后仍可能红一次，先删 `build/client/www` 再重打） |
 | 换台机器打的 APK 装不上、提示「签名不一致」 | **每台机器的 ~/.android/debug.keystore 都是各自生成的**（AGP 首次构建时造一份），所以"在另一台机器上打的包"= 另一把钥匙 = 无法覆盖安装，只能卸载重装（存档丢）。项目把 key 钉在 `client.config.json` 的 `android.signerSha256`：构建期核对指纹、不符拒绝构建，`package-android` 与 `publish-release` 再各验一次产物。换机器=复制那一份 `debug.keystore`（或 `SP_KEYSTORE` 指过去），**并离线备份** |
 | 想确认"这个包到底是哪把 key 签的" | `apksigner verify --print-certs <apk>`（build-tools 里）；`tools/android-signing.mjs` 在打包与发布前会自动做同一件事（GitHub 的资源 CDN 对 `Range` 返回 501，所以远端包得整包下） |
+| apk 构建一分钟就报 `Your project path contains non-ASCII characters` | AGP 拒绝非 ASCII 工程路径。**别**用 `android.overridePathCheck=true` 关检查（只是把失败换成 `Could not create provider for value source …AndroidDirectoryCreator` + `Couldn't open current thread, error = 5`），把构建树搬到纯 ASCII 路径（§7a） |
+| 报 `Failed to create service 'AndroidLocationsBuildService'` | 加 `--stacktrace` 才看得到真因 `com.android.prefs.AndroidLocationsException`：`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` 同时存在（**值相同也算冲突**）。只留前者（§7b） |
+| 报「无效源发行版: 21」/ `invalid source release: 21` | `JAVA_HOME` 是 17：Capacitor 8 的 android 模块 `sourceCompatibility 21`。换 JDK 21+；现在打包器会在 `cap sync` 之前就拒绝（§7c） |
+| 报 `Unexpected character: '"' @ app/build.gradle` 这类"语法错" | 那个文件被按平台编码（GBK）写回了，而它里面全是中文报错文案。用编辑器改、保证 UTF-8，改完 `gradlew help`（10 s）验一遍 |
 | 给 `publish()` 写集成测试时整个测试挂死 | `publish()` **从头到尾是同步的**（`spawnSync` + curl），在同一个进程里跑它会把事件循环占满——而假 API 服务器就在那个循环里，于是 curl 永远等不到响应。假服务器必须在**别的进程**，或者把 `publish()` 放到子进程里跑（`test/publish.test.js` 用后者）。同理：`req.resume()` 必须在挂 `data` 监听**之后**，否则请求体已被 flowing 模式吃掉、`end` 永远不触发 |
 | 用 PowerShell 的 `Get-Content`/`Set-Content` 改含中文的文件 | 默认编码会把 UTF-8 中文写成乱码（`/签名不一�?` 直接让 `node --check` 报正则未闭合）。要么用编辑工具改，要么 `Set-Content -Encoding utf8`；改完**务必** `node --check`。同理，**行内命令里别塞中文**（会被控制台编码破坏，PowerShell 直接解析失败） |
 | 语言切换菜单空 / `/packs/index.json` 404 | 0.2.0 的内容包（`docs/PACKS.md`）：真实服务器用 `server/packs.js` 现算索引，静态托管跑不了。打包时用**游戏自己的工具**生成 `packs/index.json`（`writePackIndex()` 调 `node tools/packs.mjs index --out …`，和上游发布 zip 同一套），并把 `packs/` 挂载一起镜像 |
@@ -214,17 +222,125 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 | 改了 Java 却发了增量包 | 增量包**只替换 payload**，改不了 APK 里的原生代码；只吃增量的客户端会"新前端 + 旧原生"。改过壳/Java 的版本用 `--no-delta` 明确走全量 |
 | feed 里加了字段（`payload` / `delta`）但客户端没反应 | 客户端只认 `parseLatestFeed()` 解析出来的 feed——**新增字段必须在那里解析**（`feedSideFile()`），否则 picker 拿到的对象上根本没有这个键，判断永远走"没有增量" |
 | 首次引入 overlay 的那一版拿不到增量 | 引入 overlay 的 APK 里是**旧 picker**（不解析 `delta`），所以那一次更新必须装完整包；给那一版的后一版打包时加 `--no-delta`（包没人能用），再下一版才真正走增量 |
+| 推了代码，Actions 一片安静 | `on:` 只有 `workflow_dispatch` + `push: tags` 时**推分支不触发任何东西**。要"推完就出 exe"，`on.push` 得有 `branches: [master]`（配 `paths-ignore: ['**.md']`，纯文档别烧 768 MB 产物）。加分支触发时**必须**同步改发布步骤：`if: github.event_name == 'push'` 对分支推送同样成立，会变成每次提交发一个 1.15 GB 的 Release，要按 `startsWith(github.ref, 'refs/tags/v')` 判 |
+| CI 跑测试挂住 / 明明有测试却没跑到 | 上游游戏仓库 checkout 在 workspace 的 `game/` 下，裸 `node --test` 会把它那 1021 个测试文件一起扫进来（第一次跑 CI 就这么卡死的）。显式给 glob：`node --test "test/*.test.js"` |
+| CI 里"补丁自检"四十秒就红 | 那个 job 没 checkout 游戏仓库，而自检要按钉死的上游 commit 重建补丁再比对。check job 也要一次带 `repository:` + `ref:` 的 checkout，并给它 `SP_GAME_ROOT` |
 
-## 7. 交付
+## 7. Windows 打包机的三个坑（报错里都不出现真正的原因）
+
+在中文 Windows 开发机上打 apk 时踩到的。CI 不会遇到（runner 的路径是纯 ASCII、环境变量也干净），exe 完全不受影响；
+而每次都要先摊完 800 MB payload 才走到这一步，所以代价特别高。三条的共同点：**表层日志指向的地方都不是原因**。
+
+这三条现在都由 `tools/android-preflight.mjs` 在**摊 payload 之前**检查，拒绝时直接说明原因（§7 末尾）。
+
+**（a）工程路径不能含非 ASCII 字符。** `E:\卫\fork` 这种路径 AGP 会直接拒绝（一分钟后才失败）：
+
+```
+* Where: Build file 'E:\<乱码>\fork\mobile\android\app\build.gradle' line: 1
+> Failed to apply plugin 'com.android.internal.application'.
+   > Your project path contains non-ASCII characters. This will most likely cause the build to fail on Windows.
+     Please move your project to a different directory. … This warning can be disabled by adding the line
+     'android.overridePathCheck=true' to gradle.properties file in the project directory.
+```
+
+**别照它说的关检查**：`android.overridePathCheck=true` 只是关掉这道检查，让失败改在后面的服务创建阶段出现——
+`Failed to create service 'AndroidLocationsBuildService'` + `Exception in thread "File watcher server" …
+Couldn't open current thread, error = 5`，更难查，一样构建不出来。唯一的修法是把**整份构建树搬到纯 ASCII 路径**再打：
+
+```powershell
+robocopy 'E:\卫\fork' 'E:\spbuild\proj' /MIR /XD node_modules build out .git
+```
+
+游戏 checkout 也要复制到 ASCII 路径（`SP_GAME_ROOT` 指新的那份，`--game` 同理），否则 payload 里仍会带中文路径。
+**产物目录同样要 ASCII**：`apkanalyzer` / `aapt2` 在中文路径上会收到被控制台编码毁掉的参数，报 `Access denied - E:\??`。
+
+打包器现在会在动 payload **之前**拒绝非 ASCII 工程路径，并指出是哪个字符（`tools/android-preflight.mjs`）。
+
+**（b）`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` 只能设一个。** 两个都设——**哪怕值完全相同**——AGP 照样拒绝：
+
+```
+Caused by: com.android.prefs.AndroidLocationsException: Several environment variables and/or system properties contain
+different paths to the Android Preferences folder.
+- ANDROID_PREFS_ROOT(environment variable): E:\spbuild\android-user
+- ANDROID_USER_HOME(environment variable): E:\spbuild\android-user
+It is recommended to use ANDROID_USER_HOME as other methods are deprecated
+```
+
+外层只显示 `Failed to create service 'AndroidLocationsBuildService'` → `Could not create provider for value source
+AndroidLocationsBuildService.AndroidDirectoryCreator`，**不加 `--stacktrace` 看不到上面那段**（"different paths"
+是误导，值相同也算冲突）。只留 `ANDROID_USER_HOME` 即可。这条与路径无关：纯 ASCII 路径下同样复现，删掉一个立刻过。
+
+打包器同样会提前拒绝这一对（`tools/android-preflight.mjs` 的 `androidPrefsProblem()`）。另外
+`ANDROID_HOME` 与 `ANDROID_SDK_ROOT` 指向不同目录时只给一句警告——两个都会被读、先命中的赢，留着过期的那份迟早
+在某次构建里把「SDK 36 找不到」指向错的安装位置。
+
+**（c）JDK 必须是 21。** 见 §0 的前置：17 能过所有"有没有 JDK"的旧检查、能同步完 800 MB payload，然后死在
+`:capacitor-android:compileDebugJavaWithJavac` 的「无效源发行版: 21」，**报错里一次都没提 21**。现在
+`package-android.mjs` 读 `<jdk>/release` 的 `JAVA_VERSION`、在摊 payload **之前**就拒绝（`tools/android-preflight.mjs`
+的 `jdkProblem()`），`package-release.mjs` 的 `findJdk()` 也只认 21+（`JAVA_HOME` 指 17/1.8 时不会悄悄用错，而是走
+"跳过 APK"那条路）。
+
+**附带一条（同一件事的另一面）**：`app/build.gradle` 里的报错文案是中文，是给人看的。所以**别用 PowerShell 的
+`Set-Content` 改它**——按平台编码写回去之后，Gradle 读出来会是
+`Unexpected character: '"' @ app/build.gradle line: 32`，看起来像语法错，其实是文件编码坏了（§6 里 `node --check`
+那行的同一类问题）。用编辑器改、或保证写 UTF-8；改完用 `gradlew help`（约 10 s）过一遍，比跑完 assemble 再发现快得多。
+
+## 8. 交付
 
 * **exe**：给 `build/desktop/win-unpacked/` 整个目录，自己压 zip（LZMA）。别只给 exe——它离不开旁边的 dll/locales/resources。
 * **apk**：debug 包用 debug keystore 签过、可直接安装；正式分发才需要自己的签名（见 `docs/PACKAGING.md` §5）。
 * 产物目录（`build/`、`mobile/android/app/build/`、`app/src/main/assets/public/`）都已 gitignore，**不要提交**。
 * 发版后玩家拿到新内容的方式：Android 从 build 7 起可以走应用内增量（§6 的最后一组行），其它情况要换新包。
 
-## 8. 验收四步
+## 9. 验收四步
 
 1. `npm test`（用例含 payload 补丁格式、游戏契约、更新与增量规则）——红了的断言先读懂，别改断言；
 2. 重新 `npm run client:desktop` + `npm run client:android`，按 §5 的 1)~5) **验产物**（哈希、启动冒烟、apk 拆包、aapt2）；
 3. `git diff --stat upstream/master..master` 确认游戏仓库没有混进客户端专用代码；
 4. 有设备时按 `docs/PACKAGING.md` §16 跑一遍增量更新的真机验证（单人、局域网开服、第一次应用内更新）。
+
+## 10. 这一轮交付里最贵的几次失误
+
+§6 / §7 记的是技术坑。这里记的是**判断上**的失误——它们不会报错，只会"安静地不对"，所以比任何一条技术坑都费时间。
+
+**（a）把"和官方包用同一把 key"当成了需求。**
+
+一开始把 `client.config.json` 的 `android.signerSha256` 钉成**上游发布包**的指纹，理由很正当：签名一致 = 玩家覆盖安装，存档不丢。
+问题是这把 key 的私钥在上游作者手里，**拿不到**。后果分两层：
+
+1. 本机的签名闸门从此每次都拒绝构建（"指纹与项目不符"），看起来像构建坏了，其实是自己设的闸门在起作用；
+2. 更糟的是**在此之前**打出来的包：签名和手机上已经装着的官方包不同 → 覆盖安装失败 → 表现成"构建不成功，之前构建的 apk 也装不上"。合并起来看像是打包器坏了，实际是两件独立的事。
+
+正确的问法不是"用哪把 key 最方便"，而是"**这把 key 我拿不拿得到**"。拿不到就不是选项，早一天承认早一天收工。
+现在的做法（**只在我的 fork 里**；这个 PR 不带换 key 的提交，原因写在 PR 描述开头）：用本机生成的 key，`signerSha256` 钉住它自己的指纹（`8152e091…`），并写明"装过官方包的设备需要卸载一次"——
+代价换成一次性卸载，换来的是**每次构建都可复现**。`tools/switch-signing-key.ps1` 负责把卸载那一步的存档带过去。
+
+**（b）"CI 出包"只做了一半：能手动跑，但推代码不会跑。**
+
+工作流写的是 `workflow_dispatch` + `push: tags v*`。前者的可用性全靠人记得去点；
+推完代码看到 Actions 一片安静，第一反应会是"CI 挂了"。少了 `branches: [master]` 这一行，
+CI 就只是"一个需要人记得去点的打包按钮"，而不是 CI。
+
+**（c）校验排在 800 MB 之后。**
+
+中文路径、JDK 17、`ANDROID_USER_HOME` + `ANDROID_PREFS_ROOT` 并存，这三条每次都要**摊完整个 payload** 才报错，
+一次就是五分钟起步，而报错里说的都不是原因（§7）。现在都提到 `tools/android-preflight.mjs` 里、在动 payload 之前拒绝。
+教训是通用的一条：**凡是"环境不对"类的失败，都要排在最贵的步骤之前**。
+
+**（d）把"本地构建绿了"当成"能用"。**
+
+签名那件事里，构建一直是绿的（在闸门之前的那版），但产物装不上——验收没做的那一步恰好是唯一能发现它的那步。
+现在的验收顺序是：`npm test` → 重打 → **拆包/装机验一次**（§5、§9）。
+
+**（e）长时间无声构建。** exe 一次 4 分钟、apk 再加 4 分钟、CI 6–15 分钟。中途不吭声，对方只能猜"是不是卡死了"。
+排期长的步骤先说明白它在跑什么、大概多久，比事后解释便宜得多。
+
+**如果重做一遍，只会提前问三个问题：**
+
+1. 这把 key 我拿得到吗？（拿不到 → 现在就换自签，别拖到装不上的时候）
+2. 推代码会触发吗？（会 → 才叫 CI）
+3. 这个校验能不能排在 800 MB 之前？（不能 → 为什么不能）
+
+另一个纯工程上的发现：**闸门要能在"没做错事"时不误伤**。签名闸门拦下的前两次都是自己人（拿不到的 key、换过的 key），
+第三次真拦下了错包——但前两次的经验会让人下意识地想去关掉它。闸门的失败信息里必须直接给出"下一步该做什么"，
+否则它迟早被当成噪音绕过。

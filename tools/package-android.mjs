@@ -8,8 +8,15 @@
 //   --release         build a release APK (unsigned → it still needs `apksigner`, see docs/PACKAGING.md)
 //   --skip-install    do not run `npm install` in mobile/ even when the Capacitor CLI is missing
 //
-// Needs a JDK 17+ (JAVA_HOME) and the Android SDK (`ANDROID_HOME` / the platform default location) with
-// platform 36 + build-tools 36 — the versions mobile/android/variables.gradle asks for.
+// Needs a JDK 21+ (JAVA_HOME) and the Android SDK (`ANDROID_HOME` / the platform default location) with
+// platform 36 + build-tools 36 — the versions mobile/android/variables.gradle asks for. 21 is not a preference:
+// @capacitor/android 8 compiles with `sourceCompatibility 21`, so a 17 JDK dies in :capacitor-android's
+// compileDebugJavaWithJavac with "无效源发行版: 21" after the payload has already been synced.
+//
+// On Windows the project also has to live on a pure-ASCII path and at most one of ANDROID_USER_HOME /
+// ANDROID_PREFS_ROOT may be set; tools/android-preflight.mjs states both before anything expensive runs
+// (docs/PACKAGING-EXPERIENCE.md §7). A non-ASCII checkout is not fatal: the build runs through a `subst` drive
+// letter, so `E:\卫\fork\mobile\android` reaches Gradle as `X:\fork\mobile\android` — same files, no copy.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -17,9 +24,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { CLIENT_ROOT, assembleClient, assertArtComplete, loadConfig, parseCommonArgs } from './package-client.mjs';
 import { expectedSigner, findAndroidSdk, verifyApkSigner } from './android-signing.mjs';
+import { androidPrefsProblem, asciiAnchorFor, jdkProblem, pathProblem, sdkEnvWarning } from './android-preflight.mjs';
 
 const MOBILE = path.join(CLIENT_ROOT, 'mobile');
-const ANDROID = path.join(MOBILE, 'android');
+let ANDROID = path.join(MOBILE, 'android');
 const MANIFEST = path.join(ANDROID, 'app', 'src', 'main', 'AndroidManifest.xml');
 
 /** PATH with the running Node first: Capacitor spawns Node/Gradle helpers from it. */
@@ -44,6 +52,32 @@ function sdkDir() {
 }
 
 /**
+ * A pure-ASCII view of `dir` for Gradle, via `subst` on Windows; null when it cannot be made (not Windows, or every
+ * drive letter is taken). Only the *view* changes: `subst X: E:\卫` makes `X:\fork\mobile\android` the very same
+ * directory as `E:\卫\fork\mobile\android`, so nothing is copied and the 800 MB payload is synced once. The mapping
+ * is removed when the process exits.
+ */
+function mapAsciiDrive(dir) {
+  if (process.platform !== 'win32') return null;
+  const anchor = asciiAnchorFor(dir);
+  if (!anchor) return null;
+  const tail = path.win32.relative(anchor, dir);
+  for (const letter of 'ZYXWVUTSRQPONMLKJ') {
+    const drive = `${letter}:`;
+    if (fs.existsSync(`${drive}\\`)) continue; // taken (a real drive, a disconnected share, another subst)
+    if (spawnSync('subst', [drive, anchor], { encoding: 'utf8' }).status !== 0) continue;
+    const view = path.join(`${drive}\\`, tail);
+    if (!fs.existsSync(view)) {
+      spawnSync('subst', [drive, '/D'], { encoding: 'utf8' });
+      continue;
+    }
+    process.on('exit', () => spawnSync('subst', [drive, '/D'], { encoding: 'utf8' }));
+    return view;
+  }
+  return null;
+}
+
+/**
  * The browser client reaches a LAN server over plain ws:// when the packaged address has no TLS, so the app allows
  * cleartext (default: ws to a local/LAN server). `cap add android` regenerates the manifest, hence this re-patch.
  */
@@ -59,6 +93,24 @@ if (o.help) {
   console.log('usage: node tools/package-android.mjs [--server <address>] [--game <checkout>] [--release] [--skip-install]');
   process.exit(0);
 }
+
+// Refuse the Windows-only traps first (docs/PACKAGING-EXPERIENCE.md §7): each of them otherwise surfaces after the
+// 800 MB payload is synced, and none of them names its cause in the Gradle output.
+const pathIssue = pathProblem(ANDROID);
+if (pathIssue) {
+  // Fatal for Gradle, not for us: hand it an ASCII view of the same directory instead of refusing the build.
+  const view = mapAsciiDrive(ANDROID);
+  if (!view) throw new Error(pathIssue);
+  console.log(`package-android: 工程路径含非 ASCII 字符 —— 本次用 ${view} 构建（subst 盘符视图，同一批文件）`);
+  ANDROID = view;
+}
+const prefsIssue = androidPrefsProblem();
+if (prefsIssue) throw new Error(prefsIssue);
+const jdkIssue = jdkProblem(process.env.JAVA_HOME);
+if (jdkIssue) throw new Error(jdkIssue);
+const sdkHint = sdkEnvWarning();
+if (sdkHint) console.warn(`package-android: ${sdkHint}`);
+
 const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
 assertArtComplete(built);
 
@@ -78,7 +130,6 @@ ensureCleartext();
 const sdk = sdkDir();
 if (!sdk) throw new Error('找不到 Android SDK —— 设置 ANDROID_HOME（见 docs/PACKAGING.md）');
 fs.writeFileSync(path.join(ANDROID, 'local.properties'), `sdk.dir=${sdk.replace(/\\/g, '\\\\')}\n`);
-if (!process.env.JAVA_HOME) console.warn('package-android: 未设置 JAVA_HOME —— Gradle 需要 JDK 17+（见 docs/PACKAGING.md）');
 
 console.log(`package-android: 把 payload 同步进 Capacitor 工程（服务器 ${built.server}，游戏 ${built.game.describe || built.game.app}）…`);
 run(process.execPath, [cli, 'sync', 'android'], MOBILE);
@@ -97,7 +148,8 @@ const wantedSigner = expectedSigner(loadConfig());
 for (const f of found) {
   const full = path.join(apkDir, f);
   const st = fs.statSync(full);
-  console.log(`package-android: ${path.relative(CLIENT_ROOT, full).split(path.sep).join('/')} (${(st.size / 1048576).toFixed(1)} MB)`);
+  const rel = path.relative(CLIENT_ROOT, full);
+  console.log(`package-android: ${rel.startsWith('..') ? full : rel.split(path.sep).join('/')} (${(st.size / 1048576).toFixed(1)} MB)`);
   const signer = verifyApkSigner(full, { expected: wantedSigner, sdkDir: sdk });
   if (signer.ok === false) throw new Error(`package-android: ${path.basename(full)}\n${signer.reason}`);
   if (signer.ok === null) console.warn(`package-android: 无法核对签名（${signer.reason}）—— 发布前请另行确认`);

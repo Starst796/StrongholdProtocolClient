@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { findGameRoot, SERVER_PRIVATE } from '../tools/game-contract.mjs';
-import { OFFLINE_FILES, dataFileNames, serverDataSource } from '../tools/package-client.mjs';
+import { OFFLINE_FILES, dataFileNames, serverDataSource, writePageStandins } from '../tools/package-client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WS_CJS = path.join(ROOT, 'desktop', 'node_modules', 'ws', 'index.js');
@@ -93,6 +93,9 @@ describe('host server round-trip', { skip: (HAVE_WS && GAME_ROOT) ? false : 'nee
       }
     };
     copyServer('');
+    // 0.3.1+ : server/testMode.js and server/match/llmGate.js are private (Node-only upstream) and replaced by the
+    // payload's page-safe stand-ins — the in-page server imports both.
+    writePageStandins(root);
     fs.writeFileSync(path.join(root, 'server', 'data.js'), serverDataSource(dataFileNames(GAME_ROOT)));
     fs.cpSync(path.join(GAME_ROOT, 'shared'), path.join(root, 'shared'), { recursive: true });
     const dp = OFFLINE_FILES.find(([name]) => name === 'data-provider.js');

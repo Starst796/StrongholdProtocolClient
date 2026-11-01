@@ -126,9 +126,13 @@ export function assembleClient(opts = {}) {
   let copied = 0;
   /** The payload inventory written at the end (`null` when opts.skipInventory). */
   let inventory = null;
-  // Files the payload does not mirror but *derives*: the generated ones (shim, server address, provenance) and the
-  // patched ones (see tools/payload-patches.mjs). Skipping them here keeps the patch from stacking on itself.
-  const DERIVED = new Set(['data.js', 'server/data.js', 'js/runtime-config.js', 'build.json', PACK_INDEX_FILE, ...PATCHED_FILES]);
+  // Files the payload does not mirror but *derives*: the generated ones (shim, server address, provenance), the
+  // page-safe stand-ins for the two 0.3.x modules a WebView cannot load (see PAGE_STANDINS), and the patched ones
+  // (see tools/payload-patches.mjs). Skipping them here keeps the patch from stacking on itself.
+  const DERIVED = new Set([
+    'data.js', 'server/data.js', 'js/runtime-config.js', 'build.json', PACK_INDEX_FILE,
+    ...PAGE_STANDINS.map(([rel]) => rel), ...PATCHED_FILES,
+  ]);
 
   /** Mirror one source tree into the payload; every mirrored path is recorded in `expected`. */
   const mirror = (relSrc, relDst, keep = null) => {
@@ -186,6 +190,10 @@ export function assembleClient(opts = {}) {
   // The offline runtime layer: import-map shims, the browser data provider, the loopback socket and the boot module
   // (loaded by the patched index.html before main.js; a no-op unless the launch mode is 'solo').
   for (const [name, rel] of OFFLINE_FILES) writeGenerated(rel, offlineSource(name));
+  // The page-safe stand-ins for server modules that import Node APIs the payload has no shim for (0.3.1+: testMode.js
+  // reads os.networkInterfaces, llmGate.js reads the checkout with node:fs). The game's own pure logic stays; see
+  // offline/standins/ and SERVER_PRIVATE in tools/game-contract.mjs.
+  for (const [rel, name] of PAGE_STANDINS) writeGenerated(rel, standinSource(name));
   // Optional local-client art: a static server can't synthesise the empty manifest, so materialise it.
   const localArt = path.join(out, 'data', 'local-assets.json');
   if (fs.existsSync(localArt)) expected.add(path.resolve(localArt));
@@ -374,6 +382,43 @@ export const OFFLINE_FILES = [
 /** Body of a payload offline-layer file — offline/<name>, copied verbatim. */
 export function offlineSource(name) {
   return fs.readFileSync(path.join(CLIENT_ROOT, 'offline', name), 'utf8');
+}
+
+/**
+ * Payload paths of the page-safe stand-ins for game-server modules — offline/standins/<name>, copied verbatim.
+ *
+ * 0.3.1–0.3.3 added two modules to the *page's* import graph that a browser cannot load: server/lobby.js imports
+ * server/testMode.js (node:os + server/plugins/trusted.js → node:fs), and server/match/Match.js imports
+ * server/match/llmGate.js (node:fs / node:path / node:url, plus a top-level await of the external-AI host). Both are
+ * listed as private in tools/game-contract.mjs; the stand-ins keep the game's own logic and drop only the Node calls.
+ */
+export const PAGE_STANDINS = [
+  ['server/testMode.js', 'testMode.js'],
+  ['server/match/llmGate.js', 'llmGate.js'],
+];
+
+/** Body of a payload stand-in — offline/standins/<name>, copied verbatim. */
+export function standinSource(name) {
+  return fs.readFileSync(path.join(CLIENT_ROOT, 'offline', 'standins', name), 'utf8');
+}
+
+/**
+ * Write the page-safe stand-ins into a payload-like tree.
+ *
+ * `assembleClient` writes them through its own mtime-stable path (writeGenerated); the tests assemble a *minimal*
+ * payload by hand (test/host.test.js, test/host-mobile.test.js) and must do the same, or the in-page server cannot
+ * load on 0.3.1+: server/lobby.js imports server/testMode.js and server/match/Match.js imports
+ * server/match/llmGate.js, both of which are private (never copied from the checkout) and only exist as stand-ins.
+ * @param {string} payloadRoot
+ * @returns {string[]} the payload paths written
+ */
+export function writePageStandins(payloadRoot) {
+  for (const [rel, name] of PAGE_STANDINS) {
+    const dst = path.join(payloadRoot, rel);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.writeFileSync(dst, standinSource(name));
+  }
+  return PAGE_STANDINS.map(([rel]) => rel);
 }
 
 /** Data file basenames the payload mirrors (data/*.json) — what /server/data.js fetches. */

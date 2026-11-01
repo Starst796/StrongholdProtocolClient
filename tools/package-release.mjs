@@ -54,6 +54,7 @@ import { androidVersionCode, buildLatestFeed, nextBuild, readRelease, releaseTag
 import { findGameRoot, readAppVersion, readProtocolVersion } from './game-contract.mjs';
 import { buildDesktop } from './package-desktop.mjs';
 import { zipDir } from './zip.mjs';
+import { jdkMajor } from './android-preflight.mjs';
 
 /** Files whose version field tracks the game repo (same set as commit 1ca6d71). */
 export const VERSION_JSON = Object.freeze(['package.json', 'desktop/package.json', 'mobile/package.json']);
@@ -118,10 +119,15 @@ export function alignVersions(version, build = readRelease().build) {
   return changed;
 }
 
-/** JDK 17+ home: JAVA_HOME first, then the usual install roots (newest version-looking directory wins). */
+/**
+ * JDK 21+ home: JAVA_HOME first, then the usual install roots (newest usable version wins).
+ *
+ * The 21 floor is a hard requirement of @capacitor/android 8 (sourceCompatibility 21), not a preference: a 17 JDK
+ * passes an "is there a JDK" check, then fails ~10 minutes later inside :capacitor-android's javac.
+ */
 function findJdk() {
   const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const ok = (dir) => dir && fs.existsSync(path.join(dir, 'bin', javaExe));
+  const ok = (dir) => dir && fs.existsSync(path.join(dir, 'bin', javaExe)) && jdkMajor(dir) >= 21;
   if (ok(process.env.JAVA_HOME)) return process.env.JAVA_HOME;
   const roots = process.platform === 'win32'
     ? ['C:\\Program Files\\Java', 'C:\\Program Files\\Eclipse Adoptium', path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Java')]
@@ -165,7 +171,7 @@ function buildAndroid({ version, o, log }) {
   const jdk = findJdk();
   const sdk = findSdk();
   if (!jdk || !sdk) {
-    log(`package-release: 跳过 APK —— 缺少 ${!jdk ? 'JDK 17+' : 'Android SDK'}（见 docs/PACKAGING.md §5）`);
+    log(`package-release: 跳过 APK —— 缺少 ${!jdk ? 'JDK 21+' : 'Android SDK'}（见 docs/PACKAGING.md §5）`);
     return null;
   }
   const args = ['tools/package-android.mjs'];
@@ -177,7 +183,9 @@ function buildAndroid({ version, o, log }) {
   if (Number.isInteger(o.build) && o.build > 0) args.push('--build', String(o.build));
   if (o.release) args.push('--release');
   if (o.skipInstall) args.push('--skip-install');
-  run(process.execPath, args, { env: { ...process.env, JAVA_HOME: jdk, ANDROID_HOME: sdk } });
+  // Both SDK variables point at the one directory findSdk() picked: the child refuses (and warns) when they disagree,
+  // and having inherited a stale ANDROID_SDK_ROOT is exactly how that happens.
+  run(process.execPath, args, { env: { ...process.env, JAVA_HOME: jdk, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk } });
 
   const base = path.join(CLIENT_ROOT, 'mobile', 'android', 'app', 'build', 'outputs', 'apk');
   const apks = fs.existsSync(base)
@@ -279,7 +287,10 @@ export function release(o = {}) {
 
   if (o.test) {
     log('package-release: 先跑一遍测试（--no-test 可跳过）…');
-    run(process.execPath, ['--test']);
+    // 显式给 glob，理由同 .github/workflows/build.yml：`--game` 指向的游戏仓库就挂在 CLIENT_ROOT 下面（游戏目录
+    // 里带着它自己的一千多个测试文件），裸 `node --test` 会递归把它们也跑一遍 —— CI 的 build job 因此跑了 28 分钟、
+    // 报 138 个失败（那些测试要 800 MB 素材和插件环境），整个打包以「测试失败」收场，但那和客户端无关。
+    run(process.execPath, ['--test', 'test/*.test.js']);
   }
 
   const built = buildDesktop({ server: o.server, gameRoot: o.game, feed: o.feed, build, portable: o.portable, skipInstall: o.skipInstall });

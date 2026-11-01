@@ -128,7 +128,12 @@ export function pageGraph(payloadRoot, opts = {}) {
 }
 
 /** Prefixes that belong to the shell, not the page: a file here that becomes reachable is a finding in itself. */
-export const NODE_ONLY_PREFIXES = Object.freeze(['server/http/', 'server/plugins/', 'server/studio/']);
+export const NODE_ONLY_PREFIXES = Object.freeze([
+  'server/http/', 'server/plugins/', 'server/studio/',
+  // 0.3.1–0.3.3 (see SERVER_PRIVATE_DIRS in tools/game-contract.mjs): the external-AI host, the event-loop monitor
+  // and the bot-rehearsal worker pool — all Node-only, and the payload does not ship them at all.
+  'server/ai/', 'server/health/', 'server/workers/',
+]);
 
 /**
  * Check the page's graph: `node:` imports limited to `builtins`, and any `nodeOnly` prefix unreachable.
