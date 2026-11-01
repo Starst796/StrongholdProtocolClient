@@ -225,8 +225,10 @@ aapt2 dump resources app-debug.apk | findstr 01010586                           
 
 ## 7. Windows 打包机的三个坑（报错里都不出现真正的原因）
 
-在中文 Windows 开发机上打 apk 时踩到的。CI（Ubuntu）不会遇到，exe 完全不受影响；而每次都要先摊完 800 MB payload
-才走到这一步，所以代价特别高。三条的共同点：**表层日志指向的地方都不是原因**。
+在中文 Windows 开发机上打 apk 时踩到的。CI 不会遇到（runner 的路径是纯 ASCII、环境变量也干净），exe 完全不受影响；
+而每次都要先摊完 800 MB payload 才走到这一步，所以代价特别高。三条的共同点：**表层日志指向的地方都不是原因**。
+
+这三条现在都由 `tools/android-preflight.mjs` 在**摊 payload 之前**检查，拒绝时直接说明原因（§7 末尾）。
 
 **（a）工程路径不能含非 ASCII 字符。** `E:\卫\fork` 这种路径 AGP 会直接拒绝（一分钟后才失败）：
 
@@ -249,6 +251,8 @@ robocopy 'E:\卫\fork' 'E:\spbuild\proj' /MIR /XD node_modules build out .git
 游戏 checkout 也要复制到 ASCII 路径（`SP_GAME_ROOT` 指新的那份，`--game` 同理），否则 payload 里仍会带中文路径。
 **产物目录同样要 ASCII**：`apkanalyzer` / `aapt2` 在中文路径上会收到被控制台编码毁掉的参数，报 `Access denied - E:\??`。
 
+打包器现在会在动 payload **之前**拒绝非 ASCII 工程路径，并指出是哪个字符（`tools/android-preflight.mjs`）。
+
 **（b）`ANDROID_USER_HOME` 与 `ANDROID_PREFS_ROOT` 只能设一个。** 两个都设——**哪怕值完全相同**——AGP 照样拒绝：
 
 ```
@@ -263,10 +267,15 @@ It is recommended to use ANDROID_USER_HOME as other methods are deprecated
 AndroidLocationsBuildService.AndroidDirectoryCreator`，**不加 `--stacktrace` 看不到上面那段**（"different paths"
 是误导，值相同也算冲突）。只留 `ANDROID_USER_HOME` 即可。这条与路径无关：纯 ASCII 路径下同样复现，删掉一个立刻过。
 
+打包器同样会提前拒绝这一对（`tools/android-preflight.mjs` 的 `androidPrefsProblem()`）。另外
+`ANDROID_HOME` 与 `ANDROID_SDK_ROOT` 指向不同目录时只给一句警告——两个都会被读、先命中的赢，留着过期的那份迟早
+在某次构建里把「SDK 36 找不到」指向错的安装位置。
+
 **（c）JDK 必须是 21。** 见 §0 的前置：17 能过所有"有没有 JDK"的旧检查、能同步完 800 MB payload，然后死在
 `:capacitor-android:compileDebugJavaWithJavac` 的「无效源发行版: 21」，**报错里一次都没提 21**。现在
-`package-android.mjs` 读 `<jdk>/release` 的 `JAVA_VERSION`、在 `cap sync` **之前**拒绝，`package-release.mjs` 的
-`findJdk()` 也只认 21+（`JAVA_HOME` 指 17/1.8 时不会悄悄用错，而是走"跳过 APK"那条路）。
+`package-android.mjs` 读 `<jdk>/release` 的 `JAVA_VERSION`、在摊 payload **之前**就拒绝（`tools/android-preflight.mjs`
+的 `jdkProblem()`），`package-release.mjs` 的 `findJdk()` 也只认 21+（`JAVA_HOME` 指 17/1.8 时不会悄悄用错，而是走
+"跳过 APK"那条路）。
 
 **附带一条（同一件事的另一面）**：`app/build.gradle` 里的报错文案是中文，是给人看的。所以**别用 PowerShell 的
 `Set-Content` 改它**——按平台编码写回去之后，Gradle 读出来会是

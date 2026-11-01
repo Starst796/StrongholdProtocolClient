@@ -12,6 +12,10 @@
 // platform 36 + build-tools 36 — the versions mobile/android/variables.gradle asks for. 21 is not a preference:
 // @capacitor/android 8 compiles with `sourceCompatibility 21`, so a 17 JDK dies in :capacitor-android's
 // compileDebugJavaWithJavac with "无效源发行版: 21" after the payload has already been synced.
+//
+// On Windows the project also has to live on a pure-ASCII path and at most one of ANDROID_USER_HOME /
+// ANDROID_PREFS_ROOT may be set; tools/android-preflight.mjs states both before anything expensive runs
+// (docs/PACKAGING-EXPERIENCE.md §7).
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -19,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CLIENT_ROOT, assembleClient, assertArtComplete, loadConfig, parseCommonArgs } from './package-client.mjs';
 import { expectedSigner, findAndroidSdk, verifyApkSigner } from './android-signing.mjs';
+import { androidPrefsProblem, jdkProblem, pathProblem, sdkEnvWarning } from './android-preflight.mjs';
 
 const MOBILE = path.join(CLIENT_ROOT, 'mobile');
 const ANDROID = path.join(MOBILE, 'android');
@@ -45,16 +50,6 @@ function sdkDir() {
   return findAndroidSdk();
 }
 
-/** Major version of the JDK in `dir`, read from its `release` file; 0 when it cannot be read. */
-function javaMajor(dir) {
-  try {
-    const m = /^JAVA_VERSION="?(\d+)/m.exec(fs.readFileSync(path.join(dir, 'release'), 'utf8'));
-    return m ? Number(m[1]) : 0;
-  } catch {
-    return 0;
-  }
-}
-
 /**
  * The browser client reaches a LAN server over plain ws:// when the packaged address has no TLS, so the app allows
  * cleartext (default: ws to a local/LAN server). `cap add android` regenerates the manifest, hence this re-patch.
@@ -71,6 +66,18 @@ if (o.help) {
   console.log('usage: node tools/package-android.mjs [--server <address>] [--game <checkout>] [--release] [--skip-install]');
   process.exit(0);
 }
+
+// Refuse the Windows-only traps first (docs/PACKAGING-EXPERIENCE.md §7): each of them otherwise surfaces after the
+// 800 MB payload is synced, and none of them names its cause in the Gradle output.
+const pathIssue = pathProblem(ANDROID);
+if (pathIssue) throw new Error(pathIssue);
+const prefsIssue = androidPrefsProblem();
+if (prefsIssue) throw new Error(prefsIssue);
+const jdkIssue = jdkProblem(process.env.JAVA_HOME);
+if (jdkIssue) throw new Error(jdkIssue);
+const sdkHint = sdkEnvWarning();
+if (sdkHint) console.warn(`package-android: ${sdkHint}`);
+
 const built = assembleClient({ server: o.server, gameRoot: o.game, feed: o.feed, build: o.build });
 assertArtComplete(built);
 
@@ -90,15 +97,6 @@ ensureCleartext();
 const sdk = sdkDir();
 if (!sdk) throw new Error('找不到 Android SDK —— 设置 ANDROID_HOME（见 docs/PACKAGING.md）');
 fs.writeFileSync(path.join(ANDROID, 'local.properties'), `sdk.dir=${sdk.replace(/\\/g, '\\\\')}\n`);
-if (!process.env.JAVA_HOME) throw new Error('未设置 JAVA_HOME —— Gradle 需要 JDK 21+（见 docs/PACKAGING.md）');
-const jdkMajor = javaMajor(process.env.JAVA_HOME);
-if (jdkMajor && jdkMajor < 21) {
-  throw new Error(
-    `JAVA_HOME 指向 JDK ${jdkMajor}，但 Capacitor 8 的 android 模块用 Java 21 编译（sourceCompatibility 21）。\n` +
-    `低于 21 会在 :capacitor-android:compileDebugJavaWithJavac 报"无效源发行版: 21"，而那时 payload 已经同步完。\n` +
-    `换一个 JDK 21+ 的 JAVA_HOME 再打包（见 docs/PACKAGING.md §5）。`
-  );
-}
 
 console.log(`package-android: 把 payload 同步进 Capacitor 工程（服务器 ${built.server}，游戏 ${built.game.describe || built.game.app}）…`);
 run(process.execPath, [cli, 'sync', 'android'], MOBILE);

@@ -54,6 +54,7 @@ import { androidVersionCode, buildLatestFeed, nextBuild, readRelease, releaseTag
 import { findGameRoot, readAppVersion, readProtocolVersion } from './game-contract.mjs';
 import { buildDesktop } from './package-desktop.mjs';
 import { zipDir } from './zip.mjs';
+import { jdkMajor } from './android-preflight.mjs';
 
 /** Files whose version field tracks the game repo (same set as commit 1ca6d71). */
 export const VERSION_JSON = Object.freeze(['package.json', 'desktop/package.json', 'mobile/package.json']);
@@ -118,16 +119,6 @@ export function alignVersions(version, build = readRelease().build) {
   return changed;
 }
 
-/** Major version of the JDK in `dir`, read from its `release` file; 0 when it cannot be read. */
-function javaMajor(dir) {
-  try {
-    const m = /^JAVA_VERSION="?(\d+)/m.exec(fs.readFileSync(path.join(dir, 'release'), 'utf8'));
-    return m ? Number(m[1]) : 0;
-  } catch {
-    return 0;
-  }
-}
-
 /**
  * JDK 21+ home: JAVA_HOME first, then the usual install roots (newest usable version wins).
  *
@@ -136,7 +127,7 @@ function javaMajor(dir) {
  */
 function findJdk() {
   const javaExe = process.platform === 'win32' ? 'java.exe' : 'java';
-  const ok = (dir) => dir && fs.existsSync(path.join(dir, 'bin', javaExe)) && javaMajor(dir) >= 21;
+  const ok = (dir) => dir && fs.existsSync(path.join(dir, 'bin', javaExe)) && jdkMajor(dir) >= 21;
   if (ok(process.env.JAVA_HOME)) return process.env.JAVA_HOME;
   const roots = process.platform === 'win32'
     ? ['C:\\Program Files\\Java', 'C:\\Program Files\\Eclipse Adoptium', path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Java')]
@@ -192,7 +183,9 @@ function buildAndroid({ version, o, log }) {
   if (Number.isInteger(o.build) && o.build > 0) args.push('--build', String(o.build));
   if (o.release) args.push('--release');
   if (o.skipInstall) args.push('--skip-install');
-  run(process.execPath, args, { env: { ...process.env, JAVA_HOME: jdk, ANDROID_HOME: sdk } });
+  // Both SDK variables point at the one directory findSdk() picked: the child refuses (and warns) when they disagree,
+  // and having inherited a stale ANDROID_SDK_ROOT is exactly how that happens.
+  run(process.execPath, args, { env: { ...process.env, JAVA_HOME: jdk, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk } });
 
   const base = path.join(CLIENT_ROOT, 'mobile', 'android', 'app', 'build', 'outputs', 'apk');
   const apks = fs.existsSync(base)
