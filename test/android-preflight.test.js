@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { androidPrefsProblem, jdkMajor, jdkProblem, nonAsciiIn, pathProblem, sdkEnvWarning } from '../tools/android-preflight.mjs';
+import { androidPrefsProblem, asciiAnchorFor, jdkMajor, jdkProblem, nonAsciiIn, pathProblem, sdkEnvWarning } from '../tools/android-preflight.mjs';
 
 /** A throwaway directory holding a JDK-shaped `release` file (or none at all). */
 function fakeJdk(release) {
@@ -41,6 +41,21 @@ describe('pathProblem', () => {
   test('waves an ASCII path through', () => {
     assert.equal(pathProblem('D:\\a\\stronghold-protocol-client\\mobile\\android'), null);
     assert.equal(pathProblem('/home/runner/work/client/mobile/android'), null);
+  });
+});
+
+describe('asciiAnchorFor', () => {
+  // `subst X: E:\卫` gives E:\卫\fork\mobile\android the ASCII view X:\fork\mobile\android, which is the shallowest
+  // ancestor that works — mapping the drive root instead would still leave the 卫 in the path Gradle sees.
+  test('picks the deepest ancestor that hides the non-ASCII segment', () => {
+    assert.equal(asciiAnchorFor('E:\\卫\\fork\\mobile\\android'), 'E:\\卫');
+    assert.equal(asciiAnchorFor('D:\\a\\卫\\b'), 'D:\\a\\卫');
+    assert.equal(asciiAnchorFor('C:\\Users\\卫\\x'), 'C:\\Users\\卫');
+  });
+
+  test('has nothing to offer an ASCII path, or a tree broken at the drive root', () => {
+    assert.equal(asciiAnchorFor('D:\\a\\client\\mobile\\android'), null);
+    assert.equal(asciiAnchorFor('E:\\卫'), null); // X:\卫 is still non-ASCII
   });
 });
 

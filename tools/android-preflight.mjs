@@ -35,8 +35,31 @@ export function pathProblem(projectDir) {
     `AGP 会在一分钟后直接拒绝：Your project path contains non-ASCII characters。\n` +
     `别加 android.overridePathCheck=true —— 那只是把失败换成更难读的 AndroidLocationsBuildService /\n` +
     `"Couldn't open current thread, error = 5"，一样构建不出来。\n` +
-    `把整份构建树搬到纯 ASCII 路径再打包（docs/PACKAGING-EXPERIENCE.md §7a）。`
+    `package-android 在 Windows 上会用 subst 盘符给这份树一个纯 ASCII 视图（同一批文件，不复制）；\n` +
+    `这里拒绝是因为连那一步也做不到 —— 见 docs/PACKAGING-EXPERIENCE.md §7a。`
   );
+}
+
+/**
+ * The deepest ancestor of `dir` whose path relative to `dir` is pure ASCII, or null when no such ancestor helps
+ * (an ASCII path needs none; a directory whose *root* is the only broken piece cannot be fixed this way).
+ *
+ * On Windows `subst X: <ancestor>` turns `E:\卫\fork\mobile\android` into `X:\fork\mobile\android`, which is all
+ * AGP's path check looks at — the same files, no copy of the 800 MB payload (docs/PACKAGING-EXPERIENCE.md §7a).
+ * path.win32 on purpose: the rule is about Windows paths, and the tests must not depend on the host.
+ */
+export function asciiAnchorFor(dir) {
+  if (!pathProblem(dir)) return null;
+  const win = path.win32;
+  let anchor = null;
+  for (let probe = dir; ; ) {
+    const parent = win.dirname(probe);
+    if (parent === probe) break; // reached the drive root: nothing left to map
+    if (nonAsciiIn(win.relative(parent, dir)).length) break; // the tail would still carry the bad character
+    anchor = parent;
+    probe = parent;
+  }
+  return anchor;
 }
 
 /**

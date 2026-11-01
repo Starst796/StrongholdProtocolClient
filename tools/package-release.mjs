@@ -287,7 +287,10 @@ export function release(o = {}) {
 
   if (o.test) {
     log('package-release: 先跑一遍测试（--no-test 可跳过）…');
-    run(process.execPath, ['--test']);
+    // 显式给 glob，理由同 .github/workflows/build.yml：`--game` 指向的游戏仓库就挂在 CLIENT_ROOT 下面（游戏目录
+    // 里带着它自己的一千多个测试文件），裸 `node --test` 会递归把它们也跑一遍 —— CI 的 build job 因此跑了 28 分钟、
+    // 报 138 个失败（那些测试要 800 MB 素材和插件环境），整个打包以「测试失败」收场，但那和客户端无关。
+    run(process.execPath, ['--test', 'test/*.test.js']);
   }
 
   const built = buildDesktop({ server: o.server, gameRoot: o.game, feed: o.feed, build, portable: o.portable, skipInstall: o.skipInstall });

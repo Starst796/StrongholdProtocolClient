@@ -15,7 +15,8 @@
 //
 // On Windows the project also has to live on a pure-ASCII path and at most one of ANDROID_USER_HOME /
 // ANDROID_PREFS_ROOT may be set; tools/android-preflight.mjs states both before anything expensive runs
-// (docs/PACKAGING-EXPERIENCE.md §7).
+// (docs/PACKAGING-EXPERIENCE.md §7). A non-ASCII checkout is not fatal: the build runs through a `subst` drive
+// letter, so `E:\卫\fork\mobile\android` reaches Gradle as `X:\fork\mobile\android` — same files, no copy.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -23,10 +24,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { CLIENT_ROOT, assembleClient, assertArtComplete, loadConfig, parseCommonArgs } from './package-client.mjs';
 import { expectedSigner, findAndroidSdk, verifyApkSigner } from './android-signing.mjs';
-import { androidPrefsProblem, jdkProblem, pathProblem, sdkEnvWarning } from './android-preflight.mjs';
+import { androidPrefsProblem, asciiAnchorFor, jdkProblem, pathProblem, sdkEnvWarning } from './android-preflight.mjs';
 
 const MOBILE = path.join(CLIENT_ROOT, 'mobile');
-const ANDROID = path.join(MOBILE, 'android');
+let ANDROID = path.join(MOBILE, 'android');
 const MANIFEST = path.join(ANDROID, 'app', 'src', 'main', 'AndroidManifest.xml');
 
 /** PATH with the running Node first: Capacitor spawns Node/Gradle helpers from it. */
@@ -51,6 +52,32 @@ function sdkDir() {
 }
 
 /**
+ * A pure-ASCII view of `dir` for Gradle, via `subst` on Windows; null when it cannot be made (not Windows, or every
+ * drive letter is taken). Only the *view* changes: `subst X: E:\卫` makes `X:\fork\mobile\android` the very same
+ * directory as `E:\卫\fork\mobile\android`, so nothing is copied and the 800 MB payload is synced once. The mapping
+ * is removed when the process exits.
+ */
+function mapAsciiDrive(dir) {
+  if (process.platform !== 'win32') return null;
+  const anchor = asciiAnchorFor(dir);
+  if (!anchor) return null;
+  const tail = path.win32.relative(anchor, dir);
+  for (const letter of 'ZYXWVUTSRQPONMLKJ') {
+    const drive = `${letter}:`;
+    if (fs.existsSync(`${drive}\\`)) continue; // taken (a real drive, a disconnected share, another subst)
+    if (spawnSync('subst', [drive, anchor], { encoding: 'utf8' }).status !== 0) continue;
+    const view = path.join(`${drive}\\`, tail);
+    if (!fs.existsSync(view)) {
+      spawnSync('subst', [drive, '/D'], { encoding: 'utf8' });
+      continue;
+    }
+    process.on('exit', () => spawnSync('subst', [drive, '/D'], { encoding: 'utf8' }));
+    return view;
+  }
+  return null;
+}
+
+/**
  * The browser client reaches a LAN server over plain ws:// when the packaged address has no TLS, so the app allows
  * cleartext (default: ws to a local/LAN server). `cap add android` regenerates the manifest, hence this re-patch.
  */
@@ -70,7 +97,13 @@ if (o.help) {
 // Refuse the Windows-only traps first (docs/PACKAGING-EXPERIENCE.md §7): each of them otherwise surfaces after the
 // 800 MB payload is synced, and none of them names its cause in the Gradle output.
 const pathIssue = pathProblem(ANDROID);
-if (pathIssue) throw new Error(pathIssue);
+if (pathIssue) {
+  // Fatal for Gradle, not for us: hand it an ASCII view of the same directory instead of refusing the build.
+  const view = mapAsciiDrive(ANDROID);
+  if (!view) throw new Error(pathIssue);
+  console.log(`package-android: 工程路径含非 ASCII 字符 —— 本次用 ${view} 构建（subst 盘符视图，同一批文件）`);
+  ANDROID = view;
+}
 const prefsIssue = androidPrefsProblem();
 if (prefsIssue) throw new Error(prefsIssue);
 const jdkIssue = jdkProblem(process.env.JAVA_HOME);
@@ -115,7 +148,8 @@ const wantedSigner = expectedSigner(loadConfig());
 for (const f of found) {
   const full = path.join(apkDir, f);
   const st = fs.statSync(full);
-  console.log(`package-android: ${path.relative(CLIENT_ROOT, full).split(path.sep).join('/')} (${(st.size / 1048576).toFixed(1)} MB)`);
+  const rel = path.relative(CLIENT_ROOT, full);
+  console.log(`package-android: ${rel.startsWith('..') ? full : rel.split(path.sep).join('/')} (${(st.size / 1048576).toFixed(1)} MB)`);
   const signer = verifyApkSigner(full, { expected: wantedSigner, sdkDir: sdk });
   if (signer.ok === false) throw new Error(`package-android: ${path.basename(full)}\n${signer.reason}`);
   if (signer.ok === null) console.warn(`package-android: 无法核对签名（${signer.reason}）—— 发布前请另行确认`);
