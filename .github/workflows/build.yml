@@ -50,17 +50,30 @@ jobs:
   check:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
-      - name: 单元测试
-        run: node --test
+      # 补丁自检要拿上游那三个源文件重建补丁再比对，所以也得有 checkout；素材（800 MB）不需要
+      - name: 取上游游戏仓库
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SP_GAME_REPO }}
+          ref: ${{ env.SP_GAME_REF }}
+          path: game
+          fetch-depth: 1
 
-      - name: 补丁自检（按当前上游能否重新生成）
-        run: node tools/regen-patch.mjs --check
+      - name: 单元测试
+        env:
+          SP_GAME_ROOT: ${{ github.workspace }}/game
+        # 显式给 glob：game/ 就挂在 workspace 里，裸 `node --test` 会把游戏仓库自己的
+        # 1021 个测试文件一起扫进来（run #2 就是这么挂住的）
+        run: node --test "test/*.test.js"
+
+      - name: 补丁自检（按钉死的上游 commit 能否重新生成）
+        run: node tools/regen-patch.mjs --check --game game
 
   # ── 2. 出包 ────────────────────────────────────────────────────────────────
   build:
@@ -69,17 +82,17 @@ jobs:
     # PR 只跑上面的 check：完整出包要下 800 MB 素材、打 1.15 GB 的 exe，没必要
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 游戏仓库单独 checkout 到 workspace 下的 game/，本仓库保持干净
       - name: 取上游游戏仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.SP_GAME_REPO }}
           ref: ${{ env.SP_GAME_REF }}
           path: game
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
